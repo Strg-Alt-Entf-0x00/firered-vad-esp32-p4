@@ -1,0 +1,29 @@
+# Compiled Output
+build/
+*.bin
+*.elf
+*.map
+*.o
+*.a
+
+# ESP-IDF specific
+sdkconfig
+sdkconfig.old
+dependencies.lock
+managed_components/
+
+# Python / Tools
+__pycache__/
+*.pyc
+
+# Ignore large ML models (Best Practice)
+# Only scripts should be committed, users download models themselves
+orignal_models/
+converted_models/
+.reference_codes/
+*.frvd
+!examples/waveshare_p4_wifi6/main/firered_stream_vad.frvd
+
+# IDE / OS
+.vscode/
+.DS_Store
