@@ -54,7 +54,6 @@ struct FsmnFilter {
     float lookback_scale;
     const void* lookahead_weight;  // [P, 1, N2] or nullptr
     float lookahead_scale;
-    float* precomputed_float_weights; // Optimized ring buffer weights
 };
 
 /**

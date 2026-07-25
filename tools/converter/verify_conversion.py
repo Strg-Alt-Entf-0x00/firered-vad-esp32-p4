@@ -36,14 +36,6 @@ except ImportError:
     print("[FATAL] kaldiio not installed. Run: pip install kaldiio")
     sys.exit(1)
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-FIREREDVAD_DIR = os.path.join(SCRIPT_DIR, "..", "..", ".reference_codes", "FireRedVAD_official")
-sys.path.insert(0, FIREREDVAD_DIR)
-
-from fireredvad.core.detect_model import DetectModel
-from fireredvad.core.audio_feat import CMVN
-
-
 def load_frvd(frvd_path):
     """Load .frvd and return arch dict + ordered list of numpy tensors."""
     with open(frvd_path, "rb") as f:
@@ -103,7 +95,7 @@ def build_pytorch_model_from_frvd(arch, tensors):
     args.S2 = arch["S2"]
     args.dropout = 0.0  # no dropout during inference
 
-    model = DetectModel(args)
+    model = DetectModel_cls(args)
     model.eval()
 
     # Now load tensors into the state_dict in the EXACT same order as export
@@ -169,7 +161,24 @@ def main():
     parser.add_argument("--model-dir", required=True)
     parser.add_argument("--frvd", required=True)
     parser.add_argument("--num-frames", type=int, default=50)
+    parser.add_argument("--fireredvad-dir", help="Path to FireRedVAD official repository")
     args = parser.parse_args()
+
+    if args.fireredvad_dir:
+        sys.path.insert(0, os.path.abspath(args.fireredvad_dir))
+
+    try:
+        from fireredvad.core.detect_model import DetectModel
+        from fireredvad.core.audio_feat import CMVN
+    except ImportError:
+        print("[FATAL] fireredvad package not found.")
+        print("        Please ensure it is in your PYTHONPATH, or provide --fireredvad-dir")
+        print("        Example: --fireredvad-dir /path/to/FireRedVAD")
+        sys.exit(1)
+
+    # Re-assign to global scope for build_pytorch_model_from_frvd to use
+    global DetectModel_cls
+    DetectModel_cls = DetectModel
 
     # Load original model
     print("[INFO] Loading original PyTorch model...")

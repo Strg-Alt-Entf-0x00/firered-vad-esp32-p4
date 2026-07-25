@@ -27,7 +27,7 @@ static void* esp_firevad_malloc(int version, size_t size) {
     }
     return heap_caps_aligned_alloc(16, size, MALLOC_CAP_SPIRAM);
 }
-#define esp_firevad_free(ptr) heap_caps_free(ptr)
+#define esp_firevad_free_ptr(ptr) heap_caps_free(ptr)
 
 // Hardware accelerated Int8 MAC using ESP32-P4 PIE
 static inline __attribute__((always_inline))
@@ -106,7 +106,7 @@ int32_t fc_dot_s8_pie(const int8_t *input, const int8_t *filter, int32_t row_len
 #define esp_firevad_LOGI(fmt, ...) printf("[FRVD INFO] " fmt "\n", ##__VA_ARGS__)
 #define esp_firevad_LOGE(fmt, ...) fprintf(stderr, "[FRVD ERROR] " fmt "\n", ##__VA_ARGS__)
 static void* esp_firevad_malloc(int version, size_t size) { return malloc(size); }
-#define esp_firevad_free(ptr) free(ptr)
+#define esp_firevad_free_ptr(ptr) free(ptr)
 #endif
 
 // ---- Math primitives ----
@@ -235,112 +235,135 @@ static float sigmoid(float x) {
     return ez / (1.0f + ez);
 }
 
-static void init_fsmn_precomputed_weights(FsmnFilter* filter, uint32_t P, uint32_t N1, int version) {
-    if (!filter->lookback_weight) {
-        filter->precomputed_float_weights = nullptr;
-        return;
-    }
-    filter->precomputed_float_weights = (float*)heap_caps_aligned_alloc(16, N1 * P * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!filter->precomputed_float_weights) {
-        filter->precomputed_float_weights = (float*)heap_caps_aligned_alloc(16, N1 * P * sizeof(float), MALLOC_CAP_SPIRAM);
-        esp_firevad_LOGI("FSMN weights allocated in PSRAM");
-    } else {
-        esp_firevad_LOGI("FSMN weights allocated in INTERNAL RAM");
-    }
-    
-    if (version == 2) {
-        const int8_t* raw_w = (const int8_t*)filter->lookback_weight;
-        float scale = filter->lookback_scale;
-        for (uint32_t t = 0; t < N1; t++) {
-            uint32_t raw_n = N1 - 1 - t;
-            for (uint32_t p = 0; p < P; p++) {
-                filter->precomputed_float_weights[t * P + p] = (float)raw_w[p * N1 + raw_n] * scale;
-            }
-        }
-    } else if (version == 3) {
-        const int16_t* raw_w = (const int16_t*)filter->lookback_weight;
-        float scale = filter->lookback_scale;
-        for (uint32_t t = 0; t < N1; t++) {
-            uint32_t raw_n = N1 - 1 - t;
-            for (uint32_t p = 0; p < P; p++) {
-                filter->precomputed_float_weights[t * P + p] = (float)raw_w[p * N1 + raw_n] * scale;
-            }
-        }
-    } else {
-        const float* raw_w = (const float*)filter->lookback_weight;
-        for (uint32_t t = 0; t < N1; t++) {
-            uint32_t raw_n = N1 - 1 - t;
-            for (uint32_t p = 0; p < P; p++) {
-                filter->precomputed_float_weights[t * P + p] = raw_w[p * N1 + raw_n];
-            }
-        }
-    }
-}
-
 static void fsmn_lookback_frame(
     const float* input, float* output, const FsmnFilter* filter, float* cache, uint32_t* cache_head_ptr,
     uint32_t P, uint32_t N1, uint32_t S1, uint32_t cache_len, int version) 
 {
-    const float* pre_weights = filter->precomputed_float_weights;
-    
-    if (pre_weights && S1 == 1 && cache_len == (N1 - 1) && cache_head_ptr != nullptr) {
+    float scale = filter->lookback_scale;
+    if (version == 1) scale = 1.0f; // Float32 has scale inside the weights
+
+    if (S1 == 1 && cache_len == (N1 - 1) && cache_head_ptr != nullptr) {
         uint32_t head = *cache_head_ptr;
         float* __restrict__ out = output;
         const float* __restrict__ in = input;
         
         // Step 1: Output = Input + w0 * Input
-        const float* __restrict__ w0 = pre_weights; // t = 0 (current frame)
-        for (uint32_t p = 0; p < P; p += 4) {
-            float in0 = in[p + 0]; float in1 = in[p + 1]; float in2 = in[p + 2]; float in3 = in[p + 3];
-            float weight0 = w0[p + 0]; float weight1 = w0[p + 1]; float weight2 = w0[p + 2]; float weight3 = w0[p + 3];
-            out[p + 0] = in0 + weight0 * in0;
-            out[p + 1] = in1 + weight1 * in1;
-            out[p + 2] = in2 + weight2 * in2;
-            out[p + 3] = in3 + weight3 * in3;
-        }
-        
-        // Step 2: History t = 1..N1-1 from ring buffer starting at (head - 1)
-        int32_t curr_pos = (int32_t)head - 1;
-        if (curr_pos < 0) curr_pos = (int32_t)cache_len - 1;
-        
-        for (uint32_t t = 1; t < N1; t++) {
-            const float* __restrict__ wt = pre_weights + t * P;
-            const float* __restrict__ ct = cache + curr_pos * P;
-            
+        if (version == 1) { // Float32
+            const float* __restrict__ w = (const float*)filter->lookback_weight;
             for (uint32_t p = 0; p < P; p += 4) {
-                float w_0 = wt[p + 0]; float w_1 = wt[p + 1]; float w_2 = wt[p + 2]; float w_3 = wt[p + 3];
-                float c_0 = ct[p + 0]; float c_1 = ct[p + 1]; float c_2 = ct[p + 2]; float c_3 = ct[p + 3];
-                out[p + 0] += w_0 * c_0;
-                out[p + 1] += w_1 * c_1;
-                out[p + 2] += w_2 * c_2;
-                out[p + 3] += w_3 * c_3;
+                out[p + 0] = in[p + 0] + w[p + 0] * in[p + 0];
+                out[p + 1] = in[p + 1] + w[p + 1] * in[p + 1];
+                out[p + 2] = in[p + 2] + w[p + 2] * in[p + 2];
+                out[p + 3] = in[p + 3] + w[p + 3] * in[p + 3];
             }
-            
-            curr_pos--;
+            int32_t curr_pos = (int32_t)head - 1;
             if (curr_pos < 0) curr_pos = (int32_t)cache_len - 1;
+            
+            for (uint32_t t = 1; t < N1; t++) {
+                const float* __restrict__ wt = w + t * P;
+                const float* __restrict__ ct = cache + curr_pos * P;
+                for (uint32_t p = 0; p < P; p += 4) {
+                    out[p + 0] += wt[p + 0] * ct[p + 0];
+                    out[p + 1] += wt[p + 1] * ct[p + 1];
+                    out[p + 2] += wt[p + 2] * ct[p + 2];
+                    out[p + 3] += wt[p + 3] * ct[p + 3];
+                }
+                curr_pos--;
+                if (curr_pos < 0) curr_pos = (int32_t)cache_len - 1;
+            }
+        } else if (version == 2) { // Int8
+            const int8_t* __restrict__ w = (const int8_t*)filter->lookback_weight;
+            for (uint32_t p = 0; p < P; p += 4) {
+                out[p + 0] = in[p + 0] + (float)w[p + 0] * scale * in[p + 0];
+                out[p + 1] = in[p + 1] + (float)w[p + 1] * scale * in[p + 1];
+                out[p + 2] = in[p + 2] + (float)w[p + 2] * scale * in[p + 2];
+                out[p + 3] = in[p + 3] + (float)w[p + 3] * scale * in[p + 3];
+            }
+            int32_t curr_pos = (int32_t)head - 1;
+            if (curr_pos < 0) curr_pos = (int32_t)cache_len - 1;
+            
+            for (uint32_t t = 1; t < N1; t++) {
+                const int8_t* __restrict__ wt = w + t * P;
+                const float* __restrict__ ct = cache + curr_pos * P;
+                for (uint32_t p = 0; p < P; p += 4) {
+                    out[p + 0] += (float)wt[p + 0] * scale * ct[p + 0];
+                    out[p + 1] += (float)wt[p + 1] * scale * ct[p + 1];
+                    out[p + 2] += (float)wt[p + 2] * scale * ct[p + 2];
+                    out[p + 3] += (float)wt[p + 3] * scale * ct[p + 3];
+                }
+                curr_pos--;
+                if (curr_pos < 0) curr_pos = (int32_t)cache_len - 1;
+            }
+        } else if (version == 3) { // Int16
+            const int16_t* __restrict__ w = (const int16_t*)filter->lookback_weight;
+            for (uint32_t p = 0; p < P; p += 4) {
+                out[p + 0] = in[p + 0] + (float)w[p + 0] * scale * in[p + 0];
+                out[p + 1] = in[p + 1] + (float)w[p + 1] * scale * in[p + 1];
+                out[p + 2] = in[p + 2] + (float)w[p + 2] * scale * in[p + 2];
+                out[p + 3] = in[p + 3] + (float)w[p + 3] * scale * in[p + 3];
+            }
+            int32_t curr_pos = (int32_t)head - 1;
+            if (curr_pos < 0) curr_pos = (int32_t)cache_len - 1;
+            
+            for (uint32_t t = 1; t < N1; t++) {
+                const int16_t* __restrict__ wt = w + t * P;
+                const float* __restrict__ ct = cache + curr_pos * P;
+                for (uint32_t p = 0; p < P; p += 4) {
+                    out[p + 0] += (float)wt[p + 0] * scale * ct[p + 0];
+                    out[p + 1] += (float)wt[p + 1] * scale * ct[p + 1];
+                    out[p + 2] += (float)wt[p + 2] * scale * ct[p + 2];
+                    out[p + 3] += (float)wt[p + 3] * scale * ct[p + 3];
+                }
+                curr_pos--;
+                if (curr_pos < 0) curr_pos = (int32_t)cache_len - 1;
+            }
         }
-        
+
         // Step 3: Overwrite oldest frame (at head) with current input
         memcpy(cache + head * P, in, P * sizeof(float));
         
         // Step 4: Advance head pointer
         *cache_head_ptr = (head + 1) % cache_len;
     } else {
-        const int8_t* filt = (const int8_t*)filter->lookback_weight;
-        float scale = filter->lookback_scale;
-        for (uint32_t p = 0; p < P; p++) {
-            const int8_t* fw = filt + p * N1;
-            const float* ch = cache + p * cache_len;
-            float sum = (float)fw[N1 - 1] * input[p];
-            for (uint32_t n = 1; n < N1; n++) {
-                int32_t offset = (int32_t)cache_len - (int32_t)(n * S1);
-                if (offset >= 0 && offset < (int32_t)cache_len) {
-                    sum += (float)fw[N1 - 1 - n] * ch[offset];
+        // Fallback for S1 > 1. 
+        if (version == 1) {
+            const float* w = (const float*)filter->lookback_weight;
+            for (uint32_t p = 0; p < P; p++) {
+                float sum = w[p] * input[p];
+                for (uint32_t t = 1; t < N1; t++) {
+                    int32_t offset = (int32_t)cache_len - (int32_t)(t * S1);
+                    if (offset >= 0 && offset < (int32_t)cache_len) {
+                        sum += w[t * P + p] * (cache + p * cache_len)[offset];
+                    }
                 }
+                output[p] = input[p] + sum;
             }
-            output[p] = input[p] + sum * scale;
+        } else {
+            for (uint32_t p = 0; p < P; p++) {
+                float sum = 0.0f;
+                if (version == 2) {
+                    const int8_t* w = (const int8_t*)filter->lookback_weight;
+                    sum = (float)w[p] * input[p];
+                    for (uint32_t t = 1; t < N1; t++) {
+                        int32_t offset = (int32_t)cache_len - (int32_t)(t * S1);
+                        if (offset >= 0 && offset < (int32_t)cache_len) {
+                            sum += (float)w[t * P + p] * (cache + p * cache_len)[offset];
+                        }
+                    }
+                } else {
+                    const int16_t* w = (const int16_t*)filter->lookback_weight;
+                    sum = (float)w[p] * input[p];
+                    for (uint32_t t = 1; t < N1; t++) {
+                        int32_t offset = (int32_t)cache_len - (int32_t)(t * S1);
+                        if (offset >= 0 && offset < (int32_t)cache_len) {
+                            sum += (float)w[t * P + p] * (cache + p * cache_len)[offset];
+                        }
+                    }
+                }
+                output[p] = input[p] + sum * scale;
+            }
         }
-
+        
         for (uint32_t p = 0; p < P; p++) {
             float* ch = cache + p * cache_len;
             if (cache_len > 0) {
@@ -485,7 +508,6 @@ int esp_firevad_load(const uint8_t* data, size_t data_len, EspFirevadModel* mode
     if (model->arch.N2 > 0) {
         model->fsmn1.lookahead_weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->fsmn1.lookahead_scale, model);
     }
-    init_fsmn_precomputed_weights(&model->fsmn1, P, model->arch.N1, model->version);
 
     uint32_t num_blocks = R - 1;
     if (num_blocks > 0) {
@@ -509,7 +531,6 @@ int esp_firevad_load(const uint8_t* data, size_t data_len, EspFirevadModel* mode
             if (model->arch.N2 > 0) {
                 model->block_fsmn[b].lookahead_weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->block_fsmn[b].lookahead_scale, model);
             }
-            init_fsmn_precomputed_weights(&model->block_fsmn[b], P, model->arch.N1, model->version);
         }
     }
 
@@ -669,19 +690,19 @@ void esp_firevad_reset(EspFirevadModel* model) {
 void esp_firevad_free(EspFirevadModel* model) {
     if (model == nullptr) return;
     if (model->fsmn_caches != nullptr) {
-        for (uint32_t r = 0; r < model->arch.R; r++) esp_firevad_free(model->fsmn_caches[r]);
-        esp_firevad_free(model->fsmn_caches);
+        for (uint32_t r = 0; r < model->arch.R; r++) esp_firevad_free_ptr(model->fsmn_caches[r]);
+        esp_firevad_free_ptr(model->fsmn_caches);
     }
-    esp_firevad_free(model->block_fc1);
-    esp_firevad_free(model->block_fc2);
-    esp_firevad_free(model->block_fsmn);
-    esp_firevad_free(model->dnn_layers);
-    esp_firevad_free(model->scratch_h);
-    esp_firevad_free(model->scratch_p);
-    esp_firevad_free(model->scratch_p2);
-    esp_firevad_free(model->scratch_conv);
-    if (model->scratch_in_q) esp_firevad_free(model->scratch_in_q);
-    if (model->scratch_in_q16) esp_firevad_free(model->scratch_in_q16);
+    esp_firevad_free_ptr(model->block_fc1);
+    esp_firevad_free_ptr(model->block_fc2);
+    esp_firevad_free_ptr(model->block_fsmn);
+    esp_firevad_free_ptr(model->dnn_layers);
+    esp_firevad_free_ptr(model->scratch_h);
+    esp_firevad_free_ptr(model->scratch_p);
+    esp_firevad_free_ptr(model->scratch_p2);
+    esp_firevad_free_ptr(model->scratch_conv);
+    if (model->scratch_in_q) esp_firevad_free_ptr(model->scratch_in_q);
+    if (model->scratch_in_q16) esp_firevad_free_ptr(model->scratch_in_q16);
 
     // Free individually allocated tensors
     for (uint32_t i = 0; i < model->num_tensors; i++) {
@@ -693,7 +714,7 @@ void esp_firevad_free(EspFirevadModel* model) {
     }
     model->num_tensors = 0;
 
-    esp_firevad_free(model->weight_buffer);
+    esp_firevad_free_ptr(model->weight_buffer);
     memset(model, 0, sizeof(EspFirevadModel));
 }
 
@@ -751,56 +772,108 @@ void esp_firevad_infer_chunk(EspFirevadModel* model, const float* features, uint
     }
 
     auto apply_fsmn_chunk = [&](const FsmnFilter* filter, float* in_p, float* out_p) {
-        const float* filt1 = (const float*)filter->lookback_weight;
-        const float* filt2 = (const float*)filter->lookahead_weight;
-
         for (uint32_t t = 0; t < num_frames; t++) {
+            // Initialize out_p with in_p
             for (uint32_t p = 0; p < P; p++) {
-                float sum = 0.0f;
-                // Lookback
+                out_p[t * P + p] = in_p[t * P + p];
+            }
+            
+            // Lookback
+            if (model->version == 1) {
+                const float* fw = (const float*)filter->lookback_weight;
+                for (uint32_t p = 0; p < P; p++) out_p[t * P + p] += fw[p] * in_p[t * P + p];
+                
+                for (uint32_t n = 1; n < N1; n++) {
+                    int32_t offset = (int32_t)t - (int32_t)(n * S1);
+                    if (offset >= 0) {
+                        const float* w_row = fw + n * P;
+                        const float* in_row = in_p + offset * P;
+                        for (uint32_t p = 0; p < P; p++) out_p[t * P + p] += w_row[p] * in_row[p];
+                    }
+                }
+            } else if (model->version == 2) {
+                const int8_t* fw = (const int8_t*)filter->lookback_weight;
+                float scale = filter->lookback_scale;
+                for (uint32_t p = 0; p < P; p++) out_p[t * P + p] += (float)fw[p] * scale * in_p[t * P + p];
+                
+                for (uint32_t n = 1; n < N1; n++) {
+                    int32_t offset = (int32_t)t - (int32_t)(n * S1);
+                    if (offset >= 0) {
+                        const int8_t* w_row = fw + n * P;
+                        const float* in_row = in_p + offset * P;
+                        for (uint32_t p = 0; p < P; p += 4) {
+                            out_p[t * P + p + 0] += (float)w_row[p + 0] * scale * in_row[p + 0];
+                            out_p[t * P + p + 1] += (float)w_row[p + 1] * scale * in_row[p + 1];
+                            out_p[t * P + p + 2] += (float)w_row[p + 2] * scale * in_row[p + 2];
+                            out_p[t * P + p + 3] += (float)w_row[p + 3] * scale * in_row[p + 3];
+                        }
+                    }
+                }
+            } else if (model->version == 3) {
+                const int16_t* fw = (const int16_t*)filter->lookback_weight;
+                float scale = filter->lookback_scale;
+                for (uint32_t p = 0; p < P; p++) out_p[t * P + p] += (float)fw[p] * scale * in_p[t * P + p];
+                
+                for (uint32_t n = 1; n < N1; n++) {
+                    int32_t offset = (int32_t)t - (int32_t)(n * S1);
+                    if (offset >= 0) {
+                        const int16_t* w_row = fw + n * P;
+                        const float* in_row = in_p + offset * P;
+                        for (uint32_t p = 0; p < P; p += 4) {
+                            out_p[t * P + p + 0] += (float)w_row[p + 0] * scale * in_row[p + 0];
+                            out_p[t * P + p + 1] += (float)w_row[p + 1] * scale * in_row[p + 1];
+                            out_p[t * P + p + 2] += (float)w_row[p + 2] * scale * in_row[p + 2];
+                            out_p[t * P + p + 3] += (float)w_row[p + 3] * scale * in_row[p + 3];
+                        }
+                    }
+                }
+            }
+
+            // Lookahead
+            if (N2 > 0 && num_frames > 1 && filter->lookahead_weight != nullptr) {
                 if (model->version == 1) {
-                    const float* fw = filt1 + p * N1;
-                    sum += fw[N1 - 1] * in_p[t * P + p];
-                    for (uint32_t n = 1; n < N1; n++) {
-                        int32_t offset = (int32_t)t - (int32_t)(n * S1);
-                        if (offset >= 0) {
-                            sum += fw[N1 - 1 - n] * in_p[offset * P + p];
+                    const float* fw = (const float*)filter->lookahead_weight;
+                    for (uint32_t n = 0; n < N2; n++) {
+                        int32_t offset = (int32_t)t + (int32_t)((n + 1) * S2);
+                        if (offset < (int32_t)num_frames) {
+                            const float* w_row = fw + n * P;
+                            const float* in_row = in_p + offset * P;
+                            for (uint32_t p = 0; p < P; p++) out_p[t * P + p] += w_row[p] * in_row[p];
                         }
                     }
                 } else if (model->version == 2) {
-                    const int8_t* fw = ((const int8_t*)filt1) + p * N1;
-                    float scale = filter->lookback_scale;
-                    sum += (float)fw[N1 - 1] * scale * in_p[t * P + p];
-                    for (uint32_t n = 1; n < N1; n++) {
-                        int32_t offset = (int32_t)t - (int32_t)(n * S1);
-                        if (offset >= 0) {
-                            sum += (float)fw[N1 - 1 - n] * scale * in_p[offset * P + p];
-                        }
-                    }
-                }
-
-                // Lookahead
-                if (N2 > 0 && num_frames > 1) {
-                    if (model->version == 1 && filt2 != nullptr) {
-                        const float* fw = filt2 + p * N2;
-                        for (uint32_t n = 0; n < N2; n++) {
-                            int32_t offset = (int32_t)t + (int32_t)((n + 1) * S2);
-                            if (offset < (int32_t)num_frames) {
-                                sum += fw[N2 - 1 - n] * in_p[offset * P + p];
-                            }
-                        }
-                    } else if (model->version == 2 && filt2 != nullptr) {
-                        const int8_t* fw = ((const int8_t*)filt2) + p * N2;
-                        float scale = filter->lookahead_scale;
-                        for (uint32_t n = 0; n < N2; n++) {
-                            int32_t offset = (int32_t)t + (int32_t)((n + 1) * S2);
-                            if (offset < (int32_t)num_frames) {
-                                sum += (float)fw[N2 - 1 - n] * scale * in_p[offset * P + p];
+                    const int8_t* fw = (const int8_t*)filter->lookahead_weight;
+                    float scale = filter->lookahead_scale;
+                    for (uint32_t n = 0; n < N2; n++) {
+                        int32_t offset = (int32_t)t + (int32_t)((n + 1) * S2);
+                        if (offset < (int32_t)num_frames) {
+                            const int8_t* w_row = fw + n * P;
+                            const float* in_row = in_p + offset * P;
+                            for (uint32_t p = 0; p < P; p += 4) {
+                                out_p[t * P + p + 0] += (float)w_row[p + 0] * scale * in_row[p + 0];
+                                out_p[t * P + p + 1] += (float)w_row[p + 1] * scale * in_row[p + 1];
+                                out_p[t * P + p + 2] += (float)w_row[p + 2] * scale * in_row[p + 2];
+                                out_p[t * P + p + 3] += (float)w_row[p + 3] * scale * in_row[p + 3];
                             }
                         }
                     }
+                } else if (model->version == 3) {
+                    const int16_t* fw = (const int16_t*)filter->lookahead_weight;
+                    float scale = filter->lookahead_scale;
+                    for (uint32_t n = 0; n < N2; n++) {
+                        int32_t offset = (int32_t)t + (int32_t)((n + 1) * S2);
+                        if (offset < (int32_t)num_frames) {
+                            const int16_t* w_row = fw + n * P;
+                            const float* in_row = in_p + offset * P;
+                            for (uint32_t p = 0; p < P; p += 4) {
+                                out_p[t * P + p + 0] += (float)w_row[p + 0] * scale * in_row[p + 0];
+                                out_p[t * P + p + 1] += (float)w_row[p + 1] * scale * in_row[p + 1];
+                                out_p[t * P + p + 2] += (float)w_row[p + 2] * scale * in_row[p + 2];
+                                out_p[t * P + p + 3] += (float)w_row[p + 3] * scale * in_row[p + 3];
+                            }
+                        }
+                    }
                 }
-                out_p[t * P + p] = in_p[t * P + p] + sum;
             }
         }
     };
@@ -854,10 +927,10 @@ void esp_firevad_infer_chunk(EspFirevadModel* model, const float* features, uint
         }
     }
 
-    esp_firevad_free(feat_buf);
-    esp_firevad_free(h_buf);
-    esp_firevad_free(p_buf);
-    esp_firevad_free(p2_buf);
-    esp_firevad_free(conv_out);
+    esp_firevad_free_ptr(feat_buf);
+    esp_firevad_free_ptr(h_buf);
+    esp_firevad_free_ptr(p_buf);
+    esp_firevad_free_ptr(p2_buf);
+    esp_firevad_free_ptr(conv_out);
 }
 

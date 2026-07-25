@@ -288,9 +288,11 @@ def export_binary(model_dir: str, output_dir: str, quantize_int8: bool = False, 
     # ---- Write binary ----
     os.makedirs(output_dir, exist_ok=True)
 
+    prec_suffix = "int8" if quantize_int8 else ("int16" if quantize_int16 else "fp32")
     type_suffix = model_type_names.get(model_type, "unknown").lower().replace("-", "_")
-    bin_path = os.path.join(output_dir, f"firered_{type_suffix}.frvd")
-    json_path = os.path.join(output_dir, f"firered_{type_suffix}_debug.json")
+    base_name = f"firered_{type_suffix}_{prec_suffix}"
+    bin_path = os.path.join(output_dir, f"{base_name}.frvd")
+    json_path = os.path.join(output_dir, f"{base_name}_debug.json")
 
     with open(bin_path, "wb") as f:
         # ---- Header (32 bytes) ----
@@ -324,6 +326,15 @@ def export_binary(model_dir: str, output_dir: str, quantize_int8: bool = False, 
         for key in layer_order:
             tensor = state_dict[key]
             data = tensor.detach().cpu().numpy().astype(np.float32)
+            
+            if "lookback_filter" in key or "lookahead_filter" in key:
+                # FSMN structural optimization for C++:
+                # PyTorch shape is [P, 1, N]. C++ ring buffer expects [N, P] time-reversed.
+                data = data.squeeze(1)          # -> [P, N]
+                data = data[:, ::-1]            # Time reverse
+                data = data.transpose(1, 0)     # Interleave to [N, P]
+                data = np.ascontiguousarray(data)
+
             flat = data.flatten()
 
             name_hash = crc32_hash(key)
@@ -395,8 +406,14 @@ def export_binary(model_dir: str, output_dir: str, quantize_int8: bool = False, 
     layers_debug = OrderedDict()
     for key in layer_order:
         tensor = state_dict[key]
-        data_np = tensor.detach().cpu().numpy()
+        data_np = tensor.detach().cpu().numpy().astype(np.float32)
         
+        if "lookback_filter" in key or "lookahead_filter" in key:
+            data_np = data_np.squeeze(1)
+            data_np = data_np[:, ::-1]
+            data_np = data_np.transpose(1, 0)
+            data_np = np.ascontiguousarray(data_np)
+
         layer_info = {
             "shape": list(data_np.shape),
             "numel": int(data_np.size),
@@ -441,13 +458,13 @@ def main():
         description="FireRedVAD -> ESP32 Native Binary Converter",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  python export_weights.py --model-dir ../orignal_models/Stream-VAD --output-dir ../converted_models
-  python export_weights.py --model-dir ../orignal_models/VAD --output-dir ../converted_models
+  python export_weights.py --model-dir ../original_models/Stream-VAD --output-dir ../converted_models
+  python export_weights.py --model-dir ../original_models/VAD --output-dir ../converted_models
   python export_weights.py --all --output-dir ../converted_models
 """)
     parser.add_argument("--model-dir", help="Path to model directory containing model.pth.tar and cmvn.ark")
     parser.add_argument("--output-dir", required=True, help="Output directory for .frvd and debug files")
-    parser.add_argument("--all", action="store_true", help="Convert all models found in orignal_models/")
+    parser.add_argument("--all", action="store_true", help="Convert all models found in original_models/")
     parser.add_argument("--quantize-int8", action="store_true", help="Quantize weights to int8 (Symmetric Weight-Only)")
     parser.add_argument("--quantize-int16", action="store_true", help="Quantize weights to int16")
 
@@ -456,12 +473,12 @@ def main():
     if args.all:
         # Auto-discover all model directories
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        models_root = os.path.join(script_dir, "..", "..", "orignal_models")
+        models_root = os.path.join(script_dir, "..", "..", "original_models")
         if not os.path.exists(models_root):
-            models_root = os.path.join(script_dir, "..", "orignal_models")
+            models_root = os.path.join(script_dir, "..", "original_models")
 
         if not os.path.exists(models_root):
-            print(f"[FATAL] Cannot find orignal_models directory. Tried: {models_root}")
+            print(f"[FATAL] Cannot find original_models directory. Tried: {models_root}")
             sys.exit(1)
 
         converted = 0

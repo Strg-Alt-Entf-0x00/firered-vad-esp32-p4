@@ -6,6 +6,12 @@ build/
 *.o
 *.a
 
+# Ignore all dotfiles/directories by default
+.*
+!.gitignore
+!.gitattributes
+!.github/
+
 # ESP-IDF specific
 sdkconfig
 sdkconfig.old
@@ -18,11 +24,9 @@ __pycache__/
 
 # Ignore large ML models (Best Practice)
 # Only scripts should be committed, users download models themselves
-orignal_models/
-converted_models/
-.reference_codes/
+/tools/converter/converted_models/
+/tools/converter/original_models/
 *.frvd
-!examples/waveshare_p4_wifi6/main/firered_stream_vad.frvd
 
 # IDE / OS
 .vscode/
