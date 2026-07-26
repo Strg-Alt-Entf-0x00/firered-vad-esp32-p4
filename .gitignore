@@ -22,13 +22,7 @@ managed_components/
 __pycache__/
 *.pyc
 
-# Ignore large ML models (Best Practice)
-# Only scripts should be committed, users download models themselves
-/tools/converter/converted_models/
-/tools/converter/original_models/
-
 # Backup system
-/backups/
 /tools/backup/backups/
 
 *.frvd
