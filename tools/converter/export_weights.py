@@ -289,10 +289,10 @@ def export_binary(model_dir: str, output_dir: str, quantize_int8: bool = False, 
     os.makedirs(output_dir, exist_ok=True)
 
     prec_suffix = "int8" if quantize_int8 else ("int16" if quantize_int16 else "fp32")
-    type_suffix = model_type_names.get(model_type, "unknown").lower().replace("-", "_")
-    base_name = f"firered_{type_suffix}_{prec_suffix}"
+    type_suffix = model_type_names.get(model_type, "unknown").lower().replace("_", "-")
+    base_name = f"firered-{type_suffix}-{prec_suffix}"
     bin_path = os.path.join(output_dir, f"{base_name}.frvd")
-    json_path = os.path.join(output_dir, f"{base_name}_debug.json")
+    json_path = os.path.join(output_dir, f"{base_name}-debug.json")
 
     with open(bin_path, "wb") as f:
         # ---- Header (32 bytes) ----
