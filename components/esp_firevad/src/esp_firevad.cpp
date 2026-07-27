@@ -16,7 +16,19 @@
 #include "dsps_dotprod.h"
 #include "esp_timer.h"
 static const char* TAG = "EspFirevad";
+
+// Performance logging configuration
+// These logs occur every 10ms frame (~100 logs/second) and can cause:
+// - UART TX buffer overflow
+// - Task watchdog timeout
+// - System instability
+// Enable only via menuconfig for performance debugging
+#ifdef CONFIG_FIREVAD_ENABLE_PERFORMANCE_LOGS
 #define esp_firevad_LOGI(fmt, ...) ESP_LOGI(TAG, fmt, ##__VA_ARGS__)
+#else
+#define esp_firevad_LOGI(fmt, ...) // Disabled by default for production stability
+#endif
+
 #define esp_firevad_LOGE(fmt, ...) ESP_LOGE(TAG, fmt, ##__VA_ARGS__)
 
 static void* esp_firevad_malloc(int version, size_t size) {

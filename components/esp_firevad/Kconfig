@@ -1,0 +1,18 @@
+menu "ESP FireVAD Configuration"
+
+    config FIREVAD_ENABLE_PERFORMANCE_LOGS
+        bool "Enable per-frame performance logging"
+        default n
+        help
+            Enable detailed logging of Dense and FSMN layer execution times.
+            
+            WARNING: This logs every 10ms frame (~100 logs/second) which can:
+            - Cause UART TX buffer overflow
+            - Trigger task watchdog timeout
+            - Significantly impact system performance
+            
+            Only enable for performance debugging and disable for production use.
+            
+            Recommended: Keep DISABLED unless actively debugging performance.
+
+endmenu
