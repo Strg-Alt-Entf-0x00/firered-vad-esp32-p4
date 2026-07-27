@@ -17,16 +17,30 @@
 #include "esp_timer.h"
 static const char* TAG = "EspFirevad";
 
-// Performance logging configuration
-// These logs occur every 10ms frame (~100 logs/second) and can cause:
-// - UART TX buffer overflow
-// - Task watchdog timeout
-// - System instability
-// Enable only via menuconfig for performance debugging
-#ifdef CONFIG_FIREVAD_ENABLE_PERFORMANCE_LOGS
-#define esp_firevad_LOGI(fmt, ...) ESP_LOGI(TAG, fmt, ##__VA_ARGS__)
+// Performance logging configuration with flexible rate control
+// Per-frame logs occur every 10ms (~100 logs/second) which can cause UART overflow
+// Use menuconfig to select logging mode: DISABLED, RATE_LIMITED, or FULL
+
+#if defined(CONFIG_FIREVAD_LOG_RATE_LIMITED)
+    // Rate-limited logging: Configurable via menuconfig
+    static uint32_t _log_frame_counter = 0;
+    #ifndef CONFIG_FIREVAD_LOG_RATE_DIVIDER
+        #define CONFIG_FIREVAD_LOG_RATE_DIVIDER 100  // Fallback default
+    #endif
+    #define esp_firevad_LOGI(fmt, ...) \
+        do { \
+            if (++_log_frame_counter >= CONFIG_FIREVAD_LOG_RATE_DIVIDER) { \
+                ESP_LOGI(TAG, fmt, ##__VA_ARGS__); \
+                _log_frame_counter = 0; \
+            } \
+        } while(0)
+#elif defined(CONFIG_FIREVAD_LOG_FULL)
+    // Full per-frame logging: DANGEROUS - only for short tests!
+    #define esp_firevad_LOGI(fmt, ...) ESP_LOGI(TAG, fmt, ##__VA_ARGS__)
+    #warning "FIREVAD_LOG_FULL enabled: High risk of watchdog timeout! Use high baudrate (921600+) and short test duration."
 #else
-#define esp_firevad_LOGI(fmt, ...) // Disabled by default for production stability
+    // Disabled (production default): No performance logs
+    #define esp_firevad_LOGI(fmt, ...) // Disabled for production stability
 #endif
 
 #define esp_firevad_LOGE(fmt, ...) ESP_LOGE(TAG, fmt, ##__VA_ARGS__)

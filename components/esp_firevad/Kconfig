@@ -1,18 +1,59 @@
 menu "ESP FireVAD Configuration"
 
-    config FIREVAD_ENABLE_PERFORMANCE_LOGS
-        bool "Enable per-frame performance logging"
-        default n
+    choice FIREVAD_LOG_MODE
+        bool "Performance logging mode"
+        default FIREVAD_LOG_DISABLED
         help
-            Enable detailed logging of Dense and FSMN layer execution times.
+            Control per-frame performance logging behavior.
             
-            WARNING: This logs every 10ms frame (~100 logs/second) which can:
-            - Cause UART TX buffer overflow
-            - Trigger task watchdog timeout
-            - Significantly impact system performance
+            - DISABLED: No performance logs (production default)
+            - RATE_LIMITED: Periodic logs with configurable rate (safe for debugging)
+            - FULL: Log every frame (WARNING: can cause watchdog timeout!)
+        
+        config FIREVAD_LOG_DISABLED
+            bool "Disabled (production)"
+            help
+                No performance logging. Maximum system stability and performance.
+                Recommended for production use.
+        
+        config FIREVAD_LOG_RATE_LIMITED
+            bool "Rate-limited (safe debugging)"
+            help
+                Log performance metrics at a reduced rate (configurable below).
+                Safe for extended debugging without system instability.
+                Recommended for performance analysis.
+        
+        config FIREVAD_LOG_FULL
+            bool "Full per-frame (DANGEROUS - testing only!)"
+            help
+                Log every 10ms frame (~100 logs/second).
+                
+                WARNING: This WILL cause:
+                - UART TX buffer overflow at 115200 baud
+                - Task watchdog timeout after ~7 seconds
+                - System crash
+                
+                Only use with:
+                - High baudrate (921600+)
+                - Short test duration (<5 seconds)
+                - UART flow control enabled
+    endchoice
+
+    config FIREVAD_LOG_RATE_DIVIDER
+        int "Log rate divider (frames between logs)"
+        depends on FIREVAD_LOG_RATE_LIMITED
+        range 1 1000
+        default 100
+        help
+            Number of frames to skip between performance logs.
             
-            Only enable for performance debugging and disable for production use.
+            Examples (at 10ms frame rate):
+            - 10 = 10 logs/second (very verbose, watch for buffer overflow)
+            - 50 = 2 logs/second (good for detailed analysis)
+            - 100 = 1 log/second (recommended default)
+            - 200 = 0.5 logs/second (conservative)
             
-            Recommended: Keep DISABLED unless actively debugging performance.
+            Lower values = more logs = higher risk of UART overflow.
+            Increase baudrate to 921600 if using values <50.
 
 endmenu
