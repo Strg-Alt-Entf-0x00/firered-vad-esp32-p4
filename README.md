@@ -20,12 +20,9 @@ This repository strips away external deep-learning dependencies (no TFLite, no O
 │       ├── include/           # Public APIs (esp_firevad.h, esp_firevad_dsp.h)
 │       └── src/               # Native inference and DSP feature extraction 
 ├── examples/
-│   ├── console_vad/           # Interactive Console Example (REPL)
-│   │   ├── main/              # Console commands for model loading and testing
-│   │   └── converted_models/  # Pre-converted .frvd models (Stream-VAD, VAD, AED)
-│   └── waveshare_p4_wifi6/    # Hardware-specific demonstration
-│       ├── main/              # I2S + ES8311 codec integration
-│       └── components/        # Hardware abstraction layers
+│   └── console_vad/           # Interactive Console Example (REPL)
+│       ├── main/              # Console commands for model loading and testing
+│       └── converted_models/  # Pre-converted .frvd models (Stream-VAD, VAD, AED)
 ├── tools/
 │   ├── download_models.py     # Download original models from Hugging Face
 │   └── converter/             # Python scripts to convert PyTorch → .frvd
