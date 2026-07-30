@@ -1,2 +1,2 @@
-dependencies:
-  joltwallet/littlefs: "^1.14.8"
+# No external dependencies needed - using built-in SPIFFS
+dependencies: {}

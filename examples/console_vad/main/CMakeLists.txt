@@ -5,5 +5,5 @@ idf_component_register(
         esp_firevad
         console
         nvs_flash
-        joltwallet__littlefs
+        spiffs
 )

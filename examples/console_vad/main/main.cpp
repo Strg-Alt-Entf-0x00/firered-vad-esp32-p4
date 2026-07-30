@@ -9,7 +9,7 @@
  * 
  * Features:
  * - Hardware-agnostic codec support via esp_codec_dev
- * - Model loading from LittleFS partition
+ * - Model loading from SPIFFS partition
  * - Console REPL for interactive control
  * - Microphone calibration mode
  * - Adjustable gain (hardware + software)
@@ -19,7 +19,7 @@
  * - ES8311, ES7210, ES8388, and other I2S/I2C codecs
  * 
  * Console Commands:
- * - model_load <file>     : Load .frvd model from LittleFS
+ * - model_load <file>     : Load .frvd model from SPIFFS
  * - model_info            : Show loaded model details
  * - model_list            : List available models
  * - start                 : Start VAD inference
@@ -41,7 +41,7 @@
 #include "esp_console.h"
 #include "nvs_flash.h"
 #include "esp_chip_info.h"
-#include "esp_littlefs.h"
+#include "esp_spiffs.h"
 
 #include "esp_firevad.h"
 #include "esp_firevad_dsp.h"
@@ -90,31 +90,49 @@ static void print_banner(void) {
     printf("\nType 'help' for available commands.\n\n");
 }
 
-static esp_err_t mount_littlefs(void) {
-    ESP_LOGI(TAG, "Mounting LittleFS partition");
+static esp_err_t mount_spiffs(void) {
+    ESP_LOGI(TAG, "Mounting SPIFFS partition");
     
-    esp_vfs_littlefs_conf_t conf = {};
-    conf.base_path = "/spiffs";
-    conf.partition_label = "spiffs";
-    conf.format_if_mount_failed = false;
-    conf.dont_mount = false;
+    esp_vfs_spiffs_conf_t conf = {
+        .base_path = "/spiffs",
+        .partition_label = "spiffs",
+        .max_files = 5,
+        .format_if_mount_failed = false  // First try without format
+    };
     
-    esp_err_t ret = esp_vfs_littlefs_register(&conf);
+    esp_err_t ret = esp_vfs_spiffs_register(&conf);
+    
+    // If mount failed, format with progress indication
     if (ret != ESP_OK) {
-        if (ret == ESP_FAIL) {
-            ESP_LOGE(TAG, "Failed to mount LittleFS partition");
-        } else if (ret == ESP_ERR_NOT_FOUND) {
-            ESP_LOGE(TAG, "LittleFS partition not found");
-        } else {
-            ESP_LOGE(TAG, "Failed to initialize LittleFS: %s", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "SPIFFS not formatted. Formatting 12MB partition...");
+        printf("⏳ Formatting SPIFFS (this takes ~30 seconds for 12MB)...\n");
+        printf("   ");
+        fflush(stdout);
+        
+        // Format and mount
+        conf.format_if_mount_failed = true;
+        ret = esp_vfs_spiffs_register(&conf);
+        
+        printf(" ✓ Done!\n");
+        
+        if (ret != ESP_OK) {
+            if (ret == ESP_FAIL) {
+                ESP_LOGE(TAG, "Failed to format SPIFFS partition");
+            } else if (ret == ESP_ERR_NOT_FOUND) {
+                ESP_LOGE(TAG, "SPIFFS partition not found");
+            } else {
+                ESP_LOGE(TAG, "Failed to initialize SPIFFS: %s", esp_err_to_name(ret));
+            }
+            return ret;
         }
-        return ret;
+    } else {
+        ESP_LOGI(TAG, "SPIFFS mounted successfully");
     }
     
     size_t total = 0, used = 0;
-    ret = esp_littlefs_info("spiffs", &total, &used);
+    ret = esp_spiffs_info("spiffs", &total, &used);
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "LittleFS: total=%zu KB, used=%zu KB", total / 1024, used / 1024);
+        ESP_LOGI(TAG, "SPIFFS: total=%zu KB, used=%zu KB", total / 1024, used / 1024);
     }
     
     return ESP_OK;
@@ -420,7 +438,7 @@ static void register_commands(void) {
     // Model commands
     const esp_console_cmd_t cmd_load = {
         .command = "model_load",
-        .help = "Load a model from LittleFS",
+        .help = "Load a model from SPIFFS",
         .hint = "<filename.frvd>",
         .func = &cmd_model_load,
         .argtable = NULL,
@@ -442,7 +460,7 @@ static void register_commands(void) {
     
     const esp_console_cmd_t cmd_list = {
         .command = "model_list",
-        .help = "List available models in LittleFS",
+        .help = "List available models in SPIFFS",
         .hint = NULL,
         .func = &cmd_model_list,
         .argtable = NULL,
@@ -542,8 +560,8 @@ extern "C" void app_main(void) {
     }
     ESP_ERROR_CHECK(ret);
     
-    // Mount LittleFS
-    mount_littlefs();
+    // Mount SPIFFS
+    mount_spiffs();
     
     // Initialize DSP
     esp_firevad_dsp_init();

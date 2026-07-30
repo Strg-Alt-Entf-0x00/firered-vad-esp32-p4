@@ -1,0 +1,13 @@
+# Converted models (download from HuggingFace)
+converted_models/
+
+# Build artifacts
+build/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+managed_components/
+
+# IDE
+.vscode/
+*.code-workspace

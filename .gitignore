@@ -1,32 +1,48 @@
-# Compiled Output
+# ESP-IDF Build
 build/
-*.bin
-*.elf
-*.map
-*.o
-*.a
-
-# Ignore all dotfiles/directories by default
-.*
-!.gitignore
-!.gitattributes
-!.github/
-
-# ESP-IDF specific
 sdkconfig
 sdkconfig.old
 dependencies.lock
 managed_components/
 
-# Python / Tools
+# Models (download from HuggingFace)
+examples/*/converted_models/
+tools/original_models/
+tools/converted_models/
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+venv/
+.venv/
 
-# Backup system
-/tools/backup/backups/
+# Secrets & Credentials
+.env
+.env.*
+*.key
+*.pem
+credentials.json
+secrets.json
 
-*.frvd
-
-# IDE / OS
+# IDE
 .vscode/
+.idea/
+*.code-workspace
+*.swp
+*.swo
+*~
+.cache/
+.clangd-cache/
+compile_commands.json
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Backups
+tools/backup/backups/*.zip
+*.backup
+*.bak
