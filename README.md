@@ -81,6 +81,28 @@ The easiest way to test FireVAD is with the **Console Example**:
 ```bash
 cd examples/console_vad
 
+# 1. Download pre-converted models from HuggingFace
+python download_models.py              # INT8 only (~2 MB)
+# OR
+python download_models.py --all-quantizations  # All variants (~12 MB)
+
+# 2. Build & Flash (SPIFFS image created automatically!)
+idf.py build flash monitor
+
+# 3. In the console, try:
+firevad> model_list
+firevad> model_load firered-stream-vad-int8.frvd
+firevad> start
+```
+
+**What happens during build:**
+- ✅ CMake checks if `converted_models/` exists
+- ✅ Automatically creates SPIFFS partition image
+- ✅ `idf.py flash` flashes both firmware + models in one command!
+
+```bash
+cd examples/console_vad
+
 # Download pre-converted models from HuggingFace
 pip install huggingface-hub
 python download_models.py  # Downloads INT8 models (~2 MB)

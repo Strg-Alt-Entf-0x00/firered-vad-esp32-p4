@@ -5,6 +5,11 @@ sdkconfig.old
 dependencies.lock
 managed_components/
 
+# SPIFFS auto-generated
+spiffs_image.bin
+spiffs_data/
+build/spiffs_staging/
+
 # Models (download from HuggingFace)
 examples/*/converted_models/
 tools/original_models/
