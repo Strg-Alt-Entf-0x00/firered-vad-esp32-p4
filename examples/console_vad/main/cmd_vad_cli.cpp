@@ -284,9 +284,32 @@ static int cmd_play_wav(int argc, char **argv) {
         return 1;
     }
     
-    WavHeader header;
-    if (fread(&header, 1, sizeof(header), f) != sizeof(header) || memcmp(header.riff_tag, "RIFF", 4) != 0) {
+    // Read RIFF header
+    char riff[12];
+    if (fread(riff, 1, 12, f) != 12 || memcmp(riff, "RIFF", 4) != 0 || memcmp(riff+8, "WAVE", 4) != 0) {
         printf("[ERROR] Not a valid WAV file\n");
+        fclose(f);
+        return 1;
+    }
+    
+    bool data_found = false;
+    uint32_t data_length = 0;
+    while (!feof(f)) {
+        char tag[4];
+        uint32_t size;
+        if (fread(tag, 1, 4, f) != 4) break;
+        if (fread(&size, 1, 4, f) != 4) break;
+        
+        if (memcmp(tag, "data", 4) == 0) {
+            data_found = true;
+            data_length = size;
+            break;
+        }
+        fseek(f, size, SEEK_CUR);
+    }
+    
+    if (!data_found) {
+        printf("[ERROR] 'data' chunk not found\n");
         fclose(f);
         return 1;
     }
@@ -562,6 +585,34 @@ static int cmd_guide(int argc, char **argv) {
     return 0;
 }
 
+extern "C" int32_t fc_dot_s8_pie(const int8_t *input, const int8_t *filter, int32_t row_len);
+static int cmd_vad_test_pie(int argc, char **argv) {
+    int32_t len = 80;
+    if (argc > 1) len = atoi(argv[1]);
+    
+    int8_t* in = (int8_t*)heap_caps_aligned_alloc(16, len, MALLOC_CAP_SPIRAM);
+    int8_t* flt = (int8_t*)heap_caps_aligned_alloc(16, len, MALLOC_CAP_SPIRAM);
+    for (int i=0; i<len; i++) {
+        in[i] = i % 10;
+        flt[i] = (i % 5) - 2;
+    }
+    
+    int32_t sum_scalar = 0;
+    for (int i=0; i<len; i++) sum_scalar += (int32_t)in[i] * (int32_t)flt[i];
+    
+    int32_t sum_pie = fc_dot_s8_pie(in, flt, len);
+    
+    printf("Test len: %ld\n", len);
+    printf("Scalar: %ld\n", sum_scalar);
+    printf("PIE   : %ld\n", sum_pie);
+    if (sum_scalar != sum_pie) printf("MISMATCH!\n");
+    else printf("MATCH!\n");
+    
+    heap_caps_free(in);
+    heap_caps_free(flt);
+    return 0;
+}
+
 void cmd_vad_cli_register(void) {
     esp_console_register_help_command();
     
@@ -570,7 +621,7 @@ void cmd_vad_cli_register(void) {
     esp_console_cmd_t cmd_list = {}; cmd_list.command = "vad_model_list"; cmd_list.help = "List models"; cmd_list.func = &cmd_vad_model_list;
     esp_console_cmd_t cmd_wav = {}; cmd_wav.command = "fs_wav_list"; cmd_wav.help = "List WAV files"; cmd_wav.func = &cmd_fs_wav_list;
     esp_console_cmd_t cmd_thr = {}; cmd_thr.command = "vad_threshold"; cmd_thr.help = "Set threshold"; cmd_thr.hint = "<0.0-1.0>"; cmd_thr.func = &cmd_vad_threshold;
-    esp_console_cmd_t cmd_gn = {}; cmd_gn.command = "mic_gain"; cmd_gn.help = "Set software gain"; cmd_gn.hint = "<multiplier>"; cmd_gn.func = &cmd_mic_gain;
+    esp_console_cmd_t cmd_gn = {}; cmd_gn.command = "mic_gain"; cmd_gn.help = "Set mic gain (use -s for software, -h for hardware ES8311 PGA)"; cmd_gn.hint = "[-s <mult>] [-h <0-11>]"; cmd_gn.func = &cmd_mic_gain;
     esp_console_cmd_t cmd_sv = {}; cmd_sv.command = "speaker_vol"; cmd_sv.help = "Set speaker volume"; cmd_sv.hint = "<0-100>"; cmd_sv.func = &cmd_speaker_vol;
     esp_console_cmd_t cmd_met = {}; cmd_met.command = "vad_metrics"; cmd_met.help = "Show performance metrics"; cmd_met.func = &cmd_vad_metrics;
     esp_console_cmd_t cmd_rec = {}; cmd_rec.command = "record_mic"; cmd_rec.help = "Record mic to WAV"; cmd_rec.hint = "<filename.wav> <seconds>"; cmd_rec.func = &cmd_record_mic;
@@ -581,6 +632,9 @@ void cmd_vad_cli_register(void) {
     
     esp_console_cmd_t cmd_cal = {}; cmd_cal.command = "vad_calibrate"; cmd_cal.help = "Calibrate Pre-VAD"; cmd_cal.hint = "[seconds]"; cmd_cal.func = &cmd_vad_calibrate;
     esp_console_cmd_t cmd_pvd = {}; cmd_pvd.command = "vad_pre_vad"; cmd_pvd.help = "Set Pre-VAD multiplier"; cmd_pvd.hint = "<multiplier>"; cmd_pvd.func = &cmd_vad_pre_vad;
+    
+    esp_console_cmd_t cmd_tpie = {}; cmd_tpie.command = "vad_test_pie"; cmd_tpie.help = "Test PIE assembly"; cmd_tpie.func = &cmd_vad_test_pie;
+    esp_console_cmd_register(&cmd_tpie);
     
     esp_console_cmd_register(&cmd_load);
     esp_console_cmd_register(&cmd_info);

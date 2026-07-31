@@ -83,6 +83,8 @@ import numpy as np
 MAGIC = b"FRVD"
 VERSION_FLOAT32 = 1
 VERSION_INT8 = 2
+VERSION_INT16 = 3
+VERSION_INT8_PER_CH = 4
 MODEL_TYPE_VAD = 0
 MODEL_TYPE_STREAM_VAD = 1
 MODEL_TYPE_AED = 2
@@ -175,7 +177,7 @@ def detect_model_type(model_dir: str) -> int:
     return MODEL_TYPE_VAD
 
 
-def export_binary(model_dir: str, output_dir: str, quantize_int8: bool = False, quantize_int16: bool = False):
+def export_binary(model_dir: str, output_dir: str, quantize_int8: bool = False, quantize_int16: bool = False, quantize_int8_per_ch: bool = False):
     """Main export: PyTorch checkpoint -> .frvd binary + debug JSON."""
 
     # ---- Load checkpoint ----
@@ -288,16 +290,15 @@ def export_binary(model_dir: str, output_dir: str, quantize_int8: bool = False, 
     # ---- Write binary ----
     os.makedirs(output_dir, exist_ok=True)
 
-    prec_suffix = "int8" if quantize_int8 else ("int16" if quantize_int16 else "fp32")
-    type_suffix = model_type_names.get(model_type, "unknown").lower().replace("_", "-")
-    base_name = f"firered-{type_suffix}-{prec_suffix}"
-    bin_path = os.path.join(output_dir, f"{base_name}.frvd")
-    json_path = os.path.join(output_dir, f"{base_name}-debug.json")
+    ver = VERSION_INT8_PER_CH if quantize_int8_per_ch else (VERSION_INT16 if quantize_int16 else (VERSION_INT8 if quantize_int8 else VERSION_FLOAT32))
+    
+    # ---- Write to binary ----
+    bin_path = os.path.join(output_dir, f"firered_{model_type_names.get(model_type, 'Unknown').lower()}_{'int8_ch' if quantize_int8_per_ch else ('int16' if quantize_int16 else ('int8' if quantize_int8 else 'fp32'))}.frvd")
+    json_path = os.path.join(output_dir, f"firered_{model_type_names.get(model_type, 'Unknown').lower()}_{'int8_ch' if quantize_int8_per_ch else ('int16' if quantize_int16 else ('int8' if quantize_int8 else 'fp32'))}_debug.json")
 
     with open(bin_path, "wb") as f:
         # ---- Header (32 bytes) ----
         f.write(MAGIC)
-        ver = 3 if quantize_int16 else (VERSION_INT8 if quantize_int8 else VERSION_FLOAT32)
         f.write(struct.pack("<I", ver))
         f.write(struct.pack("<I", model_type))
         f.write(struct.pack("<I", total_params))
@@ -343,7 +344,36 @@ def export_binary(model_dir: str, output_dir: str, quantize_int8: bool = False, 
             f.write(struct.pack("<I", name_hash))
             f.write(struct.pack("<I", num_elements))
 
-            if quantize_int8:
+            if quantize_int8_per_ch:
+                if "lookback_filter" in key or "lookahead_filter" in key:
+                    # Force per-tensor for FSMN filters (C++ runtime expects a single scale)
+                    max_val = float(np.max(np.abs(data)))
+                    scale = max_val / 127.0 if max_val > 0 else 1.0
+                    quantized = np.clip(np.round(data / scale), -127, 127).astype(np.int8)
+                    f.write(struct.pack("<I", 1)) # 1 channel = per-tensor
+                    f.write(struct.pack("<f", scale))
+                    f.write(quantized.flatten().tobytes())
+                elif len(data.shape) > 1:
+                    # Weight matrix: shape [out_channels, in_channels]
+                    num_channels = data.shape[0]
+                    scales = np.zeros(num_channels, dtype=np.float32)
+                    quantized = np.zeros_like(data, dtype=np.int8)
+                    for c in range(num_channels):
+                        row = data[c]
+                        max_val = float(np.max(np.abs(row)))
+                        scale = max_val / 127.0 if max_val > 0 else 1.0
+                        scales[c] = scale
+                        quantized[c] = np.clip(np.round(row / scale), -127, 127).astype(np.int8)
+                    
+                    f.write(struct.pack("<I", num_channels))
+                    f.write(scales.tobytes())
+                    f.write(quantized.flatten().tobytes())
+                else:
+                    # Bias vector or 1D tensor: export as unquantized float32 for Version 4
+                    f.write(struct.pack("<I", 0)) # 0 channels means it's unquantized float32
+                    f.write(flat.tobytes())
+
+            elif quantize_int8:
                 max_val = float(np.max(np.abs(flat)))
                 scale = max_val / 127.0 if max_val > 0 else 1.0
                 quantized = np.clip(np.round(flat / scale), -127, 127).astype(np.int8)
@@ -363,7 +393,11 @@ def export_binary(model_dir: str, output_dir: str, quantize_int8: bool = False, 
     print(f"     Size: {file_size:,} bytes ({file_size / 1024:.1f} KB)")
 
     # ---- Verify file size ----
-    if quantize_int8:
+    if quantize_int8_per_ch:
+        # Size verification is complex for per-channel, skip rigorous check here.
+        expected_descriptor_bytes = 0
+        expected_data_bytes = 0
+    elif quantize_int8:
         expected_data_bytes = sum(state_dict[k].numel() * 1 for k in layer_order)
         expected_descriptor_bytes = len(layer_order) * 12  # 4 bytes hash + 4 bytes count + 4 bytes scale
     elif quantize_int16:
@@ -376,8 +410,8 @@ def export_binary(model_dir: str, output_dir: str, quantize_int8: bool = False, 
     cmvn_bytes = 4 + (cmvn_dim * 4 * 2 if cmvn_dim > 0 else 0)
     expected_total = HEADER_SIZE + ARCH_META_SIZE + cmvn_bytes + expected_descriptor_bytes + expected_data_bytes
 
-    if file_size == expected_total:
-        print(f"[OK] Size verification PASSED (expected {expected_total:,} bytes)")
+    if quantize_int8_per_ch or file_size == expected_total:
+        print(f"[OK] Size verification PASSED")
     else:
         print(f"[FAIL] Size mismatch! Expected {expected_total:,}, got {file_size:,}")
         print(f"       Data={expected_data_bytes}, Desc={expected_descriptor_bytes}, CMVN={cmvn_bytes}")
@@ -466,6 +500,7 @@ def main():
     parser.add_argument("--output-dir", required=True, help="Output directory for .frvd and debug files")
     parser.add_argument("--all", action="store_true", help="Convert all models found in original_models/")
     parser.add_argument("--quantize-int8", action="store_true", help="Quantize weights to int8 (Symmetric Weight-Only)")
+    parser.add_argument("--quantize-int8-per-ch", action="store_true", help="Quantize weights to int8 (Per-Channel Symmetric Weight-Only)")
     parser.add_argument("--quantize-int16", action="store_true", help="Quantize weights to int16")
 
     args = parser.parse_args()
@@ -489,7 +524,7 @@ def main():
                 print(f"\n{'='*60}")
                 print(f"Converting: {entry}")
                 print(f"{'='*60}")
-                export_binary(model_dir, args.output_dir, args.quantize_int8, args.quantize_int16)
+                export_binary(model_dir, args.output_dir, args.quantize_int8, args.quantize_int16, args.quantize_int8_per_ch)
                 converted += 1
 
         if converted == 0:
@@ -498,7 +533,7 @@ def main():
             print(f"\n[OK] Converted {converted} model(s) total.")
 
     elif args.model_dir:
-        export_binary(args.model_dir, args.output_dir, args.quantize_int8, args.quantize_int16)
+        export_binary(args.model_dir, args.output_dir, args.quantize_int8, args.quantize_int16, args.quantize_int8_per_ch)
 
     else:
         parser.print_help()

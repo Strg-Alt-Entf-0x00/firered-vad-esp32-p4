@@ -1,7 +1,16 @@
 #pragma once
 
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#define MEL_CONST_ATTR static const DRAM_ATTR
+#else
+#define MEL_CONST_ATTR static const
+#endif
+
 // Generated Kaldi Sparse Mel Filterbank (n_mels=80, n_fft=512)
-const uint8_t KALDI_MEL_COUNTS[80] = {
+// MEL_CONST_ATTR forces arrays into SRAM on ESP targets to avoid
+// repeated Flash/XIP-cache latency in the inner filterbank loop.
+MEL_CONST_ATTR uint8_t KALDI_MEL_COUNTS[80] = {
     2, 1, 1, 2, 2, 2, 2, 1, 1, 2, 2, 2, 3, 3, 2, 2,
     2, 2, 3, 3, 2, 3, 3, 3, 3, 3, 4, 3, 3, 4, 4, 4,
     4, 4, 4, 4, 4, 5, 5, 4, 5, 6, 5, 5, 6, 6, 6, 6,
@@ -9,7 +18,7 @@ const uint8_t KALDI_MEL_COUNTS[80] = {
     11, 11, 11, 12, 12, 12, 12, 13, 14, 14, 14, 14, 15, 16, 16, 16,
 };
 
-const uint16_t KALDI_MEL_OFFSETS[80] = {
+MEL_CONST_ATTR uint16_t KALDI_MEL_OFFSETS[80] = {
     0, 2, 3, 4, 6, 8, 10, 12, 13, 14, 16, 18, 20, 23, 26, 28,
     30, 32, 34, 37, 40, 42, 45, 48, 51, 54, 57, 61, 64, 67, 71, 75,
     79, 83, 87, 91, 95, 99, 104, 109, 113, 118, 124, 129, 134, 140, 146, 152,
@@ -17,7 +26,7 @@ const uint16_t KALDI_MEL_OFFSETS[80] = {
     288, 299, 310, 321, 333, 345, 357, 369, 382, 396, 410, 424, 438, 453, 469, 485,
 };
 
-const uint16_t KALDI_MEL_INDICES[501] = {
+MEL_CONST_ATTR uint16_t KALDI_MEL_INDICES[501] = {
     1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9,
     9, 10, 10, 11, 11, 12, 13, 12, 13, 14, 14, 15, 15, 16, 16, 17,
     17, 18, 18, 19, 20, 19, 20, 21, 21, 22, 22, 23, 24, 23, 24, 25,
@@ -52,7 +61,7 @@ const uint16_t KALDI_MEL_INDICES[501] = {
     251, 252, 253, 254, 255,
 };
 
-const float KALDI_MEL_WEIGHTS[501] = {
+MEL_CONST_ATTR float KALDI_MEL_WEIGHTS[501] = {
     0.500138f, 0.137534f, 0.862466f, 0.832237f, 0.167763f, 0.578607f, 0.421393f, 0.369876f,
     0.630124f, 0.203555f, 0.796445f, 0.077267f, 0.922733f, 0.989080f, 0.010920f, 0.937744f,
     0.062256f, 0.918905f, 0.081095f, 0.930642f, 0.069358f, 0.971119f, 0.039791f, 0.028881f,
@@ -119,7 +128,7 @@ const float KALDI_MEL_WEIGHTS[501] = {
 };
 
 // Generated Kaldi Povey Window (size 400)
-const float KALDI_WINDOW[400] = {
+MEL_CONST_ATTR float KALDI_WINDOW[400] = {
     0.116849f, 0.116920f, 0.117133f, 0.117486f, 0.117981f, 0.118616f, 0.119392f, 0.120307f,
     0.121360f, 0.122551f, 0.123879f, 0.125343f, 0.126941f, 0.128672f, 0.130535f, 0.132529f,
     0.134651f, 0.136901f, 0.139277f, 0.141778f, 0.144401f, 0.147144f, 0.150007f, 0.152988f,

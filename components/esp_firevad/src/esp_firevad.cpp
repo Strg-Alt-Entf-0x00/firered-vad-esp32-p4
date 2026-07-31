@@ -15,6 +15,7 @@
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "esp_attr.h"
+#include "esp_cpu.h"
 #include "dsps_dotprod.h"
 
 #ifndef TCM_BSS_ATTR
@@ -22,8 +23,8 @@
 #endif
 
 // Zero-wait-state memory for DSP hot path
-static TCM_BSS_ATTR int16_t tcm_scratch_in_q16[256];
-static TCM_BSS_ATTR int8_t tcm_scratch_in_q[256];
+static TCM_BSS_ATTR __attribute__((aligned(16))) int16_t tcm_scratch_in_q16[256];
+static TCM_BSS_ATTR __attribute__((aligned(16))) int8_t tcm_scratch_in_q[256];
 
 static const char* TAG = "EspFirevad";
 
@@ -66,7 +67,7 @@ static void* esp_firevad_malloc(int version, size_t size) {
 #define esp_firevad_free_ptr(ptr) heap_caps_free(ptr)
 
 // Hardware accelerated Int8 MAC using ESP32-P4 PIE
-static inline __attribute__((always_inline))
+extern "C"
 int32_t fc_dot_s8_pie(const int8_t *input, const int8_t *filter, int32_t row_len)
 {
     int32_t result = 0;
@@ -158,23 +159,34 @@ static void IRAM_ATTR dense_forward(const DenseLayer* layer, const float* input,
         float inv_scale = 1.0f / in_scale;
         
         int8_t* in_q = tcm_scratch_in_q;
+        
+        const int8_t* W = (const int8_t*)layer->weight;
+        
+        static int align_print = 0;
+        if (align_print++ < 2) {
+            printf("DEBUG: W=%p (aligned=%d), in_q=%p (aligned=%d), channel_scales=%p\n", W, ((uintptr_t)W % 16 == 0), in_q, ((uintptr_t)in_q % 16 == 0), layer->channel_scales);
+        }
+
         for (uint32_t i = 0; i < layer->in_dim; i++) {
             float val = input[i] * inv_scale;
             int32_t q = (int32_t)(val + (val >= 0.0f ? 0.5f : -0.5f));
             if (q > 127) q = 127;
-            else if (q < -127) q = -127;
+            if (q < -128) q = -128;
             in_q[i] = (int8_t)q;
         }
 
-        const int8_t* W = (const int8_t*)layer->weight;
-        
         for (uint32_t o = 0; o < layer->out_dim; o++) {
             const int8_t* __restrict__ row = W + o * layer->in_dim;
+            assert(((uintptr_t)row % 16 == 0) && ((uintptr_t)in_q % 16 == 0));
             
             int32_t sum = 0;
+#ifdef ESP_PLATFORM
+            sum = fc_dot_s8_pie(in_q, row, (int32_t)layer->in_dim);
+#else
             for (uint32_t i = 0; i < layer->in_dim; i++) {
                 sum += (int32_t)row[i] * (int32_t)in_q[i];
             }
+#endif
             
             float out_scale = in_scale;
             if (layer->channel_scales) {
@@ -266,130 +278,104 @@ static void IRAM_ATTR fsmn_lookback_frame(
     uint32_t P, uint32_t N1, uint32_t S1, uint32_t cache_len, int version) 
 {
     float scale = filter->lookback_scale;
-    if (version == 1) scale = 1.0f; // Float32 has scale inside the weights
+    if (version == 1) scale = 1.0f; // Float32 has scale baked into weights
 
     if (S1 == 1 && cache_len == (N1 - 1) && cache_head_ptr != nullptr) {
         uint32_t head = *cache_head_ptr;
         float* __restrict__ out = output;
         const float* __restrict__ in = input;
-        
-        // Step 1: Output = Input + w0 * Input
-        if (version == 1) { // Float32
+
+        if (version == 1) {
             const float* __restrict__ w = (const float*)filter->lookback_weight;
             for (uint32_t p = 0; p < P; p += 4) {
-                out[p + 0] = in[p + 0] + w[p + 0] * in[p + 0];
-                out[p + 1] = in[p + 1] + w[p + 1] * in[p + 1];
-                out[p + 2] = in[p + 2] + w[p + 2] * in[p + 2];
-                out[p + 3] = in[p + 3] + w[p + 3] * in[p + 3];
+                out[p+0] = in[p+0] + w[p+0] * in[p+0];
+                out[p+1] = in[p+1] + w[p+1] * in[p+1];
+                out[p+2] = in[p+2] + w[p+2] * in[p+2];
+                out[p+3] = in[p+3] + w[p+3] * in[p+3];
             }
             int32_t curr_pos = (int32_t)head - 1;
             if (curr_pos < 0) curr_pos = (int32_t)cache_len - 1;
-            
             for (uint32_t t = 1; t < N1; t++) {
                 const float* __restrict__ wt = w + t * P;
                 const float* __restrict__ ct = cache + curr_pos * P;
                 for (uint32_t p = 0; p < P; p += 4) {
-                    out[p + 0] += wt[p + 0] * ct[p + 0];
-                    out[p + 1] += wt[p + 1] * ct[p + 1];
-                    out[p + 2] += wt[p + 2] * ct[p + 2];
-                    out[p + 3] += wt[p + 3] * ct[p + 3];
+                    out[p+0] += wt[p+0] * ct[p+0];
+                    out[p+1] += wt[p+1] * ct[p+1];
+                    out[p+2] += wt[p+2] * ct[p+2];
+                    out[p+3] += wt[p+3] * ct[p+3];
                 }
                 curr_pos--;
                 if (curr_pos < 0) curr_pos = (int32_t)cache_len - 1;
             }
-        } else if (version == 2) { // Int8
+        } else if (version == 2 || version == 4) { // Int8
             const int8_t* __restrict__ w = (const int8_t*)filter->lookback_weight;
             for (uint32_t p = 0; p < P; p += 4) {
-                out[p + 0] = in[p + 0] + (float)w[p + 0] * scale * in[p + 0];
-                out[p + 1] = in[p + 1] + (float)w[p + 1] * scale * in[p + 1];
-                out[p + 2] = in[p + 2] + (float)w[p + 2] * scale * in[p + 2];
-                out[p + 3] = in[p + 3] + (float)w[p + 3] * scale * in[p + 3];
+                out[p+0] = in[p+0] + (float)w[p+0] * scale * in[p+0];
+                out[p+1] = in[p+1] + (float)w[p+1] * scale * in[p+1];
+                out[p+2] = in[p+2] + (float)w[p+2] * scale * in[p+2];
+                out[p+3] = in[p+3] + (float)w[p+3] * scale * in[p+3];
             }
             int32_t curr_pos = (int32_t)head - 1;
             if (curr_pos < 0) curr_pos = (int32_t)cache_len - 1;
-            
             for (uint32_t t = 1; t < N1; t++) {
                 const int8_t* __restrict__ wt = w + t * P;
                 const float* __restrict__ ct = cache + curr_pos * P;
                 for (uint32_t p = 0; p < P; p += 4) {
-                    out[p + 0] += (float)wt[p + 0] * scale * ct[p + 0];
-                    out[p + 1] += (float)wt[p + 1] * scale * ct[p + 1];
-                    out[p + 2] += (float)wt[p + 2] * scale * ct[p + 2];
-                    out[p + 3] += (float)wt[p + 3] * scale * ct[p + 3];
+                    out[p+0] += (float)wt[p+0] * scale * ct[p+0];
+                    out[p+1] += (float)wt[p+1] * scale * ct[p+1];
+                    out[p+2] += (float)wt[p+2] * scale * ct[p+2];
+                    out[p+3] += (float)wt[p+3] * scale * ct[p+3];
                 }
                 curr_pos--;
                 if (curr_pos < 0) curr_pos = (int32_t)cache_len - 1;
             }
-        } else if (version == 3) { // Int16
+        } else { // Int16
             const int16_t* __restrict__ w = (const int16_t*)filter->lookback_weight;
             for (uint32_t p = 0; p < P; p += 4) {
-                out[p + 0] = in[p + 0] + (float)w[p + 0] * scale * in[p + 0];
-                out[p + 1] = in[p + 1] + (float)w[p + 1] * scale * in[p + 1];
-                out[p + 2] = in[p + 2] + (float)w[p + 2] * scale * in[p + 2];
-                out[p + 3] = in[p + 3] + (float)w[p + 3] * scale * in[p + 3];
+                out[p+0] = in[p+0] + (float)w[p+0] * scale * in[p+0];
+                out[p+1] = in[p+1] + (float)w[p+1] * scale * in[p+1];
+                out[p+2] = in[p+2] + (float)w[p+2] * scale * in[p+2];
+                out[p+3] = in[p+3] + (float)w[p+3] * scale * in[p+3];
             }
             int32_t curr_pos = (int32_t)head - 1;
             if (curr_pos < 0) curr_pos = (int32_t)cache_len - 1;
-            
             for (uint32_t t = 1; t < N1; t++) {
                 const int16_t* __restrict__ wt = w + t * P;
                 const float* __restrict__ ct = cache + curr_pos * P;
                 for (uint32_t p = 0; p < P; p += 4) {
-                    out[p + 0] += (float)wt[p + 0] * scale * ct[p + 0];
-                    out[p + 1] += (float)wt[p + 1] * scale * ct[p + 1];
-                    out[p + 2] += (float)wt[p + 2] * scale * ct[p + 2];
-                    out[p + 3] += (float)wt[p + 3] * scale * ct[p + 3];
+                    out[p+0] += (float)wt[p+0] * scale * ct[p+0];
+                    out[p+1] += (float)wt[p+1] * scale * ct[p+1];
+                    out[p+2] += (float)wt[p+2] * scale * ct[p+2];
+                    out[p+3] += (float)wt[p+3] * scale * ct[p+3];
                 }
                 curr_pos--;
                 if (curr_pos < 0) curr_pos = (int32_t)cache_len - 1;
             }
         }
 
-        // Step 3: Overwrite oldest frame (at head) with current input
-        memcpy(cache + head * P, in, P * sizeof(float));
-        
-        // Step 4: Advance head pointer
-        *cache_head_ptr = (head + 1) % cache_len;
+        float* __restrict__ ch_head = cache + head * P;
+        memcpy(ch_head, in, P * sizeof(float));
+        *cache_head_ptr = (head + 1 >= cache_len) ? 0 : (head + 1);
     } else {
-        // Fallback for S1 > 1. 
-        if (version == 1) {
-            const float* w = (const float*)filter->lookback_weight;
-            for (uint32_t p = 0; p < P; p++) {
-                float sum = w[p] * input[p];
-                for (uint32_t t = 1; t < N1; t++) {
-                    int32_t offset = (int32_t)cache_len - (int32_t)(t * S1);
-                    if (offset >= 0 && offset < (int32_t)cache_len) {
-                        sum += w[t * P + p] * (cache + p * cache_len)[offset];
-                    }
+        const float* w_f  = (version == 1) ? (const float*)filter->lookback_weight  : nullptr;
+        const int8_t*  w_i8 = (version == 2 || version == 4) ? (const int8_t*)filter->lookback_weight  : nullptr;
+        const int16_t* w_i16 = (version == 3) ? (const int16_t*)filter->lookback_weight : nullptr;
+        for (uint32_t p = 0; p < P; p++) {
+            float sum = 0.0f;
+            if (w_f)  sum = w_f[p]  * input[p];
+            else if (w_i8)  sum = (float)w_i8[p]  * input[p];
+            else if (w_i16) sum = (float)w_i16[p] * input[p];
+            for (uint32_t t = 1; t < N1; t++) {
+                int32_t off = (int32_t)cache_len - (int32_t)(t * S1);
+                if (off >= 0 && off < (int32_t)cache_len) {
+                    const float* ch = cache + p * cache_len;
+                    if (w_f)  sum += w_f[t*P+p]  * ch[off];
+                    else if (w_i8)  sum += (float)w_i8[t*P+p]  * ch[off];
+                    else if (w_i16) sum += (float)w_i16[t*P+p] * ch[off];
                 }
-                output[p] = input[p] + sum;
             }
-        } else {
-            for (uint32_t p = 0; p < P; p++) {
-                float sum = 0.0f;
-                if (version == 2) {
-                    const int8_t* w = (const int8_t*)filter->lookback_weight;
-                    sum = (float)w[p] * input[p];
-                    for (uint32_t t = 1; t < N1; t++) {
-                        int32_t offset = (int32_t)cache_len - (int32_t)(t * S1);
-                        if (offset >= 0 && offset < (int32_t)cache_len) {
-                            sum += (float)w[t * P + p] * (cache + p * cache_len)[offset];
-                        }
-                    }
-                } else {
-                    const int16_t* w = (const int16_t*)filter->lookback_weight;
-                    sum = (float)w[p] * input[p];
-                    for (uint32_t t = 1; t < N1; t++) {
-                        int32_t offset = (int32_t)cache_len - (int32_t)(t * S1);
-                        if (offset >= 0 && offset < (int32_t)cache_len) {
-                            sum += (float)w[t * P + p] * (cache + p * cache_len)[offset];
-                        }
-                    }
-                }
-                output[p] = input[p] + sum * scale;
-            }
+            output[p] = input[p] + sum * scale;
         }
-        
         for (uint32_t p = 0; p < P; p++) {
             float* ch = cache + p * cache_len;
             if (cache_len > 0) {
@@ -431,6 +417,11 @@ static const void* read_tensor(const uint8_t* data, size_t data_len, size_t* off
         
         if (num_channels > 0) {
             // Per-channel quantized INT8
+            if (out_scale) {
+                float first_scale;
+                memcpy(&first_scale, data + *offset, sizeof(float));
+                *out_scale = first_scale;
+            }
             if (out_channel_scales) {
                 float* scales = nullptr;
 #ifdef ESP_PLATFORM
@@ -546,13 +537,44 @@ int esp_firevad_load(const uint8_t* data, size_t data_len, EspFirevadModel* mode
         offset += model->cmvn_dim * sizeof(float);
     }
 
-    uint32_t count = 0;
     const uint32_t D = model->arch.D;
     const uint32_t H = model->arch.H;
     const uint32_t P = model->arch.P;
     const uint32_t R = model->arch.R;
     const uint32_t M = model->arch.M;
 
+    // Allocate FSMN caches and scratch buffers FIRST, to guarantee they get internal SRAM
+    // before the weights consume it all.
+    model->cache_len = (model->arch.N1 > 1) ? (model->arch.N1 - 1) * model->arch.S1 : 0;
+    if (model->cache_len > 0) {
+        model->fsmn_caches = (float**)heap_caps_aligned_alloc(16, R * sizeof(float*), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        model->fsmn_cache_heads = (uint32_t*)heap_caps_aligned_alloc(16, R * sizeof(uint32_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        for (uint32_t r = 0; r < R; r++) {
+            size_t cache_bytes = P * model->cache_len * sizeof(float);
+            model->fsmn_caches[r] = (float*)heap_caps_aligned_alloc(16, cache_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+            if (!model->fsmn_caches[r]) {
+                esp_firevad_LOGE("WARNING: FSMN cache block %u fell back to PSRAM!", r);
+                model->fsmn_caches[r] = (float*)esp_firevad_malloc(model->version, cache_bytes);
+            }
+            memset(model->fsmn_caches[r], 0, cache_bytes);
+            model->fsmn_cache_heads[r] = 0;
+        }
+    }
+
+    model->scratch_h    = (float*)heap_caps_aligned_alloc(16, H * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    model->scratch_p    = (float*)heap_caps_aligned_alloc(16, P * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    model->scratch_p2   = (float*)heap_caps_aligned_alloc(16, P * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    model->scratch_conv = (float*)heap_caps_aligned_alloc(16, P * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    
+    uint32_t max_dim = (H > P) ? H : P;
+    if (D > max_dim) max_dim = D;
+    model->scratch_in_q = (int8_t*)esp_firevad_malloc(model->version, max_dim * sizeof(int8_t));
+    model->scratch_in_q16 = nullptr;
+    if (model->is_int16) {
+        model->scratch_in_q16 = (int16_t*)esp_firevad_malloc(model->version, max_dim * sizeof(int16_t));
+    }
+
+    uint32_t count = 0;
     model->fc1.weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->fc1.weight_scale, &model->fc1.channel_scales, model);
     model->fc1.in_dim = D;
     model->fc1.out_dim = H;
@@ -615,38 +637,13 @@ int esp_firevad_load(const uint8_t* data, size_t data_len, EspFirevadModel* mode
     model->out.out_dim = model->arch.odim;
     model->out.bias = read_tensor(buf, data_len, &offset, &count, model->version, &model->out.bias_scale, nullptr, model);
 
-    model->cache_len = (model->arch.N1 > 1) ? (model->arch.N1 - 1) * model->arch.S1 : 0;
-    if (model->cache_len > 0) {
-        model->fsmn_caches = (float**)heap_caps_aligned_alloc(16, R * sizeof(float*), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        model->fsmn_cache_heads = (uint32_t*)heap_caps_aligned_alloc(16, R * sizeof(uint32_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        for (uint32_t r = 0; r < R; r++) {
-            size_t cache_bytes = P * model->cache_len * sizeof(float);
-            model->fsmn_caches[r] = (float*)heap_caps_aligned_alloc(16, cache_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-            if (!model->fsmn_caches[r]) model->fsmn_caches[r] = (float*)esp_firevad_malloc(model->version, cache_bytes);
-            memset(model->fsmn_caches[r], 0, cache_bytes);
-            model->fsmn_cache_heads[r] = 0;
-        }
-    }
-
-    model->scratch_h    = (float*)heap_caps_aligned_alloc(16, H * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    model->scratch_p    = (float*)heap_caps_aligned_alloc(16, P * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    model->scratch_p2   = (float*)heap_caps_aligned_alloc(16, P * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    model->scratch_conv = (float*)heap_caps_aligned_alloc(16, P * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    
-    uint32_t max_dim = (H > P) ? H : P;
-    if (D > max_dim) max_dim = D;
-    model->scratch_in_q = (int8_t*)esp_firevad_malloc(model->version, max_dim * sizeof(int8_t));
-    model->scratch_in_q16 = nullptr;
-    if (model->is_int16) {
-        model->scratch_in_q16 = (int16_t*)esp_firevad_malloc(model->version, max_dim * sizeof(int16_t));
-    }
-
     return 0;
 }
 
-void IRAM_ATTR esp_firevad_infer_frame(EspFirevadModel* model, const float* features, bool apply_cmvn_flag, float* out_probs) {
+void IRAM_ATTR __attribute__((aligned(16))) esp_firevad_infer_frame(EspFirevadModel* model, const float* features, bool apply_cmvn_flag, float* out_probs) {
     if (model == nullptr || features == nullptr) return;
 
+    uint32_t t_start = esp_cpu_get_cycle_count();
     const uint32_t D = model->arch.D;
     const uint32_t H = model->arch.H;
     const uint32_t P = model->arch.P;
@@ -667,49 +664,49 @@ void IRAM_ATTR esp_firevad_infer_frame(EspFirevadModel* model, const float* feat
 
     int64_t t_dense = 0;
     int64_t t_fsmn = 0;
-    int64_t t0, t1;
+    uint32_t t0, t1;
 
-    t0 = esp_timer_get_time();
+    t0 = esp_cpu_get_cycle_count();
     dense_forward(&model->fc1, features, h, model);
-    t1 = esp_timer_get_time(); t_dense += (t1 - t0);
+    t1 = esp_cpu_get_cycle_count(); t_dense += (t1 - t0);
     relu_inplace(h, H);
 
-    t0 = esp_timer_get_time();
+    t0 = esp_cpu_get_cycle_count();
     dense_forward(&model->fc2, h, p, model);
-    t1 = esp_timer_get_time(); t_dense += (t1 - t0);
+    t1 = esp_cpu_get_cycle_count(); t_dense += (t1 - t0);
     relu_inplace(p, P);
 
-    t0 = esp_timer_get_time();
+    t0 = esp_cpu_get_cycle_count();
     fsmn_lookback_frame(p, conv_out, &model->fsmn1, model->fsmn_caches[0], &model->fsmn_cache_heads[0], P, N1, S1, model->cache_len, model->version);
-    t1 = esp_timer_get_time(); t_fsmn += (t1 - t0);
+    t1 = esp_cpu_get_cycle_count(); t_fsmn += (t1 - t0);
     memcpy(p, conv_out, P * sizeof(float));
 
     for (uint32_t b = 0; b < R - 1; b++) {
         memcpy(p2, p, P * sizeof(float));
-        t0 = esp_timer_get_time();
+        t0 = esp_cpu_get_cycle_count();
         dense_forward(&model->block_fc1[b], p, h, model);
-        t1 = esp_timer_get_time(); t_dense += (t1 - t0);
+        t1 = esp_cpu_get_cycle_count(); t_dense += (t1 - t0);
         relu_inplace(h, H);
-        t0 = esp_timer_get_time();
+        t0 = esp_cpu_get_cycle_count();
         dense_forward(&model->block_fc2[b], h, p, model);
-        t1 = esp_timer_get_time(); t_dense += (t1 - t0);
+        t1 = esp_cpu_get_cycle_count(); t_dense += (t1 - t0);
         
-        t0 = esp_timer_get_time();
+        t0 = esp_cpu_get_cycle_count();
         fsmn_lookback_frame(p, conv_out, &model->block_fsmn[b], model->fsmn_caches[b + 1], &model->fsmn_cache_heads[b + 1], P, N1, S1, model->cache_len, model->version);
-        t1 = esp_timer_get_time(); t_fsmn += (t1 - t0);
+        t1 = esp_cpu_get_cycle_count(); t_fsmn += (t1 - t0);
         for (uint32_t i = 0; i < P; i++) p[i] = conv_out[i] + p2[i];
     }
 
     if (model->num_dnn_layers > 0) {
-        t0 = esp_timer_get_time();
+        t0 = esp_cpu_get_cycle_count();
         dense_forward(&model->dnn_layers[0], p, h, model);
-        t1 = esp_timer_get_time(); t_dense += (t1 - t0);
+        t1 = esp_cpu_get_cycle_count(); t_dense += (t1 - t0);
         relu_inplace(h, H);
         for (uint32_t d = 1; d < model->num_dnn_layers; d++) {
             float* temp = model->scratch_p; 
-            t0 = esp_timer_get_time();
+            t0 = esp_cpu_get_cycle_count();
             dense_forward(&model->dnn_layers[d], h, temp, model);
-            t1 = esp_timer_get_time(); t_dense += (t1 - t0);
+            t1 = esp_cpu_get_cycle_count(); t_dense += (t1 - t0);
             relu_inplace(temp, H);
             memcpy(h, temp, H * sizeof(float));
         }
@@ -718,11 +715,12 @@ void IRAM_ATTR esp_firevad_infer_frame(EspFirevadModel* model, const float* feat
     }
 
     float logits[8] = {0};
-    t0 = esp_timer_get_time();
+    t0 = esp_cpu_get_cycle_count();
     dense_forward(&model->out, h, logits, model);
-    t1 = esp_timer_get_time(); t_dense += (t1 - t0);
+    t1 = esp_cpu_get_cycle_count(); t_dense += (t1 - t0);
     
-    esp_firevad_LOGI("Dense time: %lld us, FSMN time: %lld us", t_dense, t_fsmn);
+    static int p_cnt = 0;
+    if (p_cnt++ % 100 == 0) printf("Infer: dense=%d, fsmn=%d\n", (int)t_dense, (int)t_fsmn);
     
     if (out_probs) {
         uint32_t out_dim = (model->arch.odim < 8) ? model->arch.odim : 8;

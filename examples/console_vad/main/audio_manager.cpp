@@ -313,6 +313,9 @@ esp_err_t audio_manager_start_playback(void) {
     esp_err_t ret = g_codec_if->enable(g_codec_if, true);
     if (ret != ESP_OK) return ret;
     
+    // Re-apply volume to ensure DAC is not left muted by capture stop
+    audio_manager_set_speaker_vol(100);
+    
     g_playback_running = true;
     ESP_LOGI(TAG, "Audio playback started");
     return ESP_OK;
