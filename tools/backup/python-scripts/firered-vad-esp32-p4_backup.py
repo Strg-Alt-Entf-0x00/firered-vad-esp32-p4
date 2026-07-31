@@ -27,15 +27,19 @@ def normalize_excludes(excludes: List[str]) -> List[str]:
 
 def is_excluded(abs_path: str, project_root: str, excludes: List[str]) -> bool:
     rel = os.path.relpath(abs_path, project_root)
-    rel = rel.replace('\\', '/').replace('\\', '/')
-    for ex in excludes:
-        ex_norm = ex.replace('\\', '/').replace('\\', '/').rstrip('/')
-        if rel == ex_norm or rel.startswith(ex_norm + '/'):
+    rel = rel.replace('\\', '/')
+    parts = rel.split('/')
+    for part in parts:
+        if part.startswith('.') and part != '.':
+            return True
+        if part in excludes:
             return True
     return False
 
 
 def is_file_excluded(filename: str, file_excludes: List[str]) -> bool:
+    if filename.startswith('.'):
+        return True
     lower_name = filename.lower()
     for pattern in file_excludes:
         if lower_name.endswith(pattern.lower()):

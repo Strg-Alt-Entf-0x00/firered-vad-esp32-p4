@@ -8,6 +8,12 @@ sdkconfig.old
 dependencies.lock
 managed_components/
 
-# IDE
-.vscode/
+# Hidden files and folders (all folders starting with .)
+.*/
+.*/
+
+# Specific exceptions (if needed - uncomment)
+# !.github/
+
+# IDE specific files
 *.code-workspace

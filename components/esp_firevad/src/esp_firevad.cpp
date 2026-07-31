@@ -13,8 +13,18 @@
 #ifdef ESP_PLATFORM
 #include "esp_log.h"
 #include "esp_heap_caps.h"
-#include "dsps_dotprod.h"
 #include "esp_timer.h"
+#include "esp_attr.h"
+#include "dsps_dotprod.h"
+
+#ifndef TCM_BSS_ATTR
+#define TCM_BSS_ATTR DRAM_ATTR
+#endif
+
+// Zero-wait-state memory for DSP hot path
+static TCM_BSS_ATTR int16_t tcm_scratch_in_q16[256];
+static TCM_BSS_ATTR int8_t tcm_scratch_in_q[256];
+
 static const char* TAG = "EspFirevad";
 
 // Performance logging configuration with flexible rate control
@@ -137,7 +147,7 @@ static void* esp_firevad_malloc(int version, size_t size) { return malloc(size);
 
 // ---- Math primitives ----
 
-static void dense_forward(const DenseLayer* layer, const float* input, float* output, const EspFirevadModel* model) {
+static void IRAM_ATTR dense_forward(const DenseLayer* layer, const float* input, float* output, const EspFirevadModel* model) {
     if (model->is_int8) {
         float max_in = 0.0f;
         for (uint32_t i = 0; i < layer->in_dim; i++) {
@@ -147,7 +157,7 @@ static void dense_forward(const DenseLayer* layer, const float* input, float* ou
         float in_scale = (max_in > 0.0f) ? (max_in / 127.0f) : 1.0f;
         float inv_scale = 1.0f / in_scale;
         
-        int8_t* in_q = model->scratch_in_q;
+        int8_t* in_q = tcm_scratch_in_q;
         for (uint32_t i = 0; i < layer->in_dim; i++) {
             float val = input[i] * inv_scale;
             int32_t q = (int32_t)(val + (val >= 0.0f ? 0.5f : -0.5f));
@@ -157,33 +167,32 @@ static void dense_forward(const DenseLayer* layer, const float* input, float* ou
         }
 
         const int8_t* W = (const int8_t*)layer->weight;
-        const int8_t* B = (const int8_t*)layer->bias;
-
-        float out_scale = in_scale * layer->weight_scale;
-
-#ifdef ESP_PLATFORM
-        // Enable PIE hardware instructions
-        asm volatile (
-            "csrsi  0x7f2, 0b01        \n\t"
-            "li     x29, 0b10          \n\t"
-            "esp.movx.w.cfg x29        \n\t"
-            ::: "x29"
-        );
-#endif
-
+        
         for (uint32_t o = 0; o < layer->out_dim; o++) {
             const int8_t* __restrict__ row = W + o * layer->in_dim;
             
             int32_t sum = 0;
-#ifdef ESP_PLATFORM
-            sum = fc_dot_s8_pie(in_q, row, layer->in_dim);
-#else
             for (uint32_t i = 0; i < layer->in_dim; i++) {
                 sum += (int32_t)row[i] * (int32_t)in_q[i];
             }
-#endif
+            
+            float out_scale = in_scale;
+            if (layer->channel_scales) {
+                out_scale *= layer->channel_scales[o];
+            } else {
+                out_scale *= layer->weight_scale;
+            }
+            
             float out_f = (float)sum * out_scale;
-            if (B != nullptr) out_f += (float)B[o] * layer->bias_scale;
+            if (layer->bias != nullptr) {
+                if (model->is_int8_per_ch) {
+                    const float* B = (const float*)layer->bias;
+                    out_f += B[o]; // bias is unquantized float32 in v4
+                } else {
+                    const int8_t* B = (const int8_t*)layer->bias;
+                    out_f += (float)B[o] * layer->bias_scale; // bias is int8 in v2
+                }
+            }
             output[o] = out_f;
         }
     } else if (model->is_int16) {
@@ -196,7 +205,11 @@ static void dense_forward(const DenseLayer* layer, const float* input, float* ou
         float in_scale = (max_in > 0.0f) ? (max_in / 1023.0f) : 1.0f;
         float inv_scale = 1.0f / in_scale;
         
+#ifdef ESP_PLATFORM
+        int16_t* in_q = tcm_scratch_in_q16;
+#else
         int16_t* in_q = model->scratch_in_q16;
+#endif
         for (uint32_t i = 0; i < layer->in_dim; i++) {
             float val = input[i] * inv_scale;
             int32_t q = (int32_t)(val + (val >= 0.0f ? 0.5f : -0.5f));
@@ -212,20 +225,11 @@ static void dense_forward(const DenseLayer* layer, const float* input, float* ou
         for (uint32_t o = 0; o < layer->out_dim; o++) {
             const int16_t* __restrict__ row = W + o * layer->in_dim;
             float sum_f = 0.0f;
-#ifdef ESP_PLATFORM
-            int16_t out_val;
-            // shift = -3 means real_shift = 15 - (-3) = 18.
-            // max sum is 256 * 1023 * 32767 = 8.58e9. 
-            // 8.58e9 >> 18 = 32732, which safely fits in int16_t!
-            dsps_dotprod_s16(row, in_q, &out_val, layer->in_dim, -3);
-            sum_f = ((float)out_val * 262144.0f) * out_scale;
-#else
             int64_t sum = 0;
             for (uint32_t i = 0; i < layer->in_dim; i++) {
                 sum += (int32_t)row[i] * (int32_t)in_q[i];
             }
             sum_f = (float)sum * out_scale;
-#endif
             if (B != nullptr) sum_f += (float)B[o] * layer->bias_scale;
             output[o] = sum_f;
         }
@@ -235,24 +239,20 @@ static void dense_forward(const DenseLayer* layer, const float* input, float* ou
         for (uint32_t o = 0; o < layer->out_dim; o++) {
             float sum = 0.0f;
             const float* row = W + o * layer->in_dim;
-#ifdef ESP_PLATFORM
-            dsps_dotprod_f32(row, input, &sum, layer->in_dim);
-#else
             for (uint32_t i = 0; i < layer->in_dim; i++) sum += row[i] * input[i];
-#endif
             if (B != nullptr) sum += ((const float*)layer->bias)[o];
             output[o] = sum;
         }
     }
 }
 
-static void relu_inplace(float* x, uint32_t len) {
+static void IRAM_ATTR relu_inplace(float* x, uint32_t len) {
     for (uint32_t i = 0; i < len; i++) {
         if (x[i] < 0.0f) x[i] = 0.0f;
     }
 }
 
-static float sigmoid(float x) {
+static float IRAM_ATTR sigmoid(float x) {
     if (x >= 0.0f) {
         float ez = expf(-x);
         return 1.0f / (1.0f + ez);
@@ -261,7 +261,7 @@ static float sigmoid(float x) {
     return ez / (1.0f + ez);
 }
 
-static void fsmn_lookback_frame(
+static void IRAM_ATTR fsmn_lookback_frame(
     const float* input, float* output, const FsmnFilter* filter, float* cache, uint32_t* cache_head_ptr,
     uint32_t P, uint32_t N1, uint32_t S1, uint32_t cache_len, int version) 
 {
@@ -415,7 +415,7 @@ static uint32_t read_u32(const uint8_t* data, size_t offset) {
 }
 
 static const void* read_tensor(const uint8_t* data, size_t data_len, size_t* offset,
-                               uint32_t* out_count, int version, float* out_scale, EspFirevadModel* model) 
+                               uint32_t* out_count, int version, float* out_scale, const float** out_channel_scales, EspFirevadModel* model) 
 {
     if (*offset + 8 > data_len) return nullptr;
     *offset += 4;
@@ -424,7 +424,38 @@ static const void* read_tensor(const uint8_t* data, size_t data_len, size_t* off
     if (out_count) *out_count = count;
 
     size_t data_bytes = 0;
-    if (version == 2 || version == 3) {
+    if (version == 4) {
+        if (*offset + 4 > data_len) return nullptr;
+        uint32_t num_channels = read_u32(data, *offset);
+        *offset += 4;
+        
+        if (num_channels > 0) {
+            // Per-channel quantized INT8
+            if (out_channel_scales) {
+                float* scales = nullptr;
+#ifdef ESP_PLATFORM
+                scales = (float*)heap_caps_aligned_alloc(16, num_channels * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+                if (!scales) scales = (float*)heap_caps_aligned_alloc(16, num_channels * sizeof(float), MALLOC_CAP_SPIRAM);
+#else
+                scales = (float*)malloc(num_channels * sizeof(float));
+#endif
+                if (scales) {
+                    memcpy(scales, data + *offset, num_channels * sizeof(float));
+                    if (model->num_tensors < 64) {
+                        model->tensor_ptrs[model->num_tensors++] = scales;
+                    }
+                }
+                *out_channel_scales = scales;
+            }
+            *offset += num_channels * sizeof(float);
+            data_bytes = count * sizeof(int8_t);
+        } else {
+            // Unquantized Float32 (for bias)
+            if (out_scale) *out_scale = 1.0f;
+            if (out_channel_scales) *out_channel_scales = nullptr;
+            data_bytes = count * sizeof(float);
+        }
+    } else if (version == 2 || version == 3) {
         if (*offset + 4 > data_len) return nullptr;
         uint32_t s_bits = read_u32(data, *offset);
         if (out_scale) {
@@ -432,10 +463,12 @@ static const void* read_tensor(const uint8_t* data, size_t data_len, size_t* off
             memcpy(&scale, &s_bits, sizeof(float));
             *out_scale = scale;
         }
+        if (out_channel_scales) *out_channel_scales = nullptr;
         *offset += 4;
         data_bytes = count * (version == 2 ? sizeof(int8_t) : sizeof(int16_t));
     } else {
         if (out_scale) *out_scale = 1.0f;
+        if (out_channel_scales) *out_channel_scales = nullptr;
         data_bytes = count * sizeof(float);
     }
 
@@ -473,12 +506,13 @@ int esp_firevad_load(const uint8_t* data, size_t data_len, EspFirevadModel* mode
     }
 
     uint32_t version = read_u32(data, 4);
-    if (version != 1 && version != 2 && version != 3) {
+    if (version != 1 && version != 2 && version != 3 && version != 4) {
         esp_firevad_LOGE("Unsupported version: %u", version); return -4;
     }
     model->version = version;
-    model->is_int8 = (version == 2);
+    model->is_int8 = (version == 2 || version == 4);
     model->is_int16 = (version == 3);
+    model->is_int8_per_ch = (version == 4);
     model->num_tensors = 0;
 
     const uint8_t* buf = data;
@@ -519,20 +553,20 @@ int esp_firevad_load(const uint8_t* data, size_t data_len, EspFirevadModel* mode
     const uint32_t R = model->arch.R;
     const uint32_t M = model->arch.M;
 
-    model->fc1.weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->fc1.weight_scale, model);
+    model->fc1.weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->fc1.weight_scale, &model->fc1.channel_scales, model);
     model->fc1.in_dim = D;
     model->fc1.out_dim = H;
-    model->fc1.bias = read_tensor(buf, data_len, &offset, &count, model->version, &model->fc1.bias_scale, model);
+    model->fc1.bias = read_tensor(buf, data_len, &offset, &count, model->version, &model->fc1.bias_scale, nullptr, model);
 
-    model->fc2.weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->fc2.weight_scale, model);
+    model->fc2.weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->fc2.weight_scale, &model->fc2.channel_scales, model);
     model->fc2.in_dim = H;
     model->fc2.out_dim = P;
-    model->fc2.bias = read_tensor(buf, data_len, &offset, &count, model->version, &model->fc2.bias_scale, model);
+    model->fc2.bias = read_tensor(buf, data_len, &offset, &count, model->version, &model->fc2.bias_scale, nullptr, model);
 
-    model->fsmn1.lookback_weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->fsmn1.lookback_scale, model);
+    model->fsmn1.lookback_weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->fsmn1.lookback_scale, nullptr, model);
     model->fsmn1.lookahead_weight = nullptr;
     if (model->arch.N2 > 0) {
-        model->fsmn1.lookahead_weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->fsmn1.lookahead_scale, model);
+        model->fsmn1.lookahead_weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->fsmn1.lookahead_scale, nullptr, model);
     }
 
     uint32_t num_blocks = R - 1;
@@ -542,20 +576,20 @@ int esp_firevad_load(const uint8_t* data, size_t data_len, EspFirevadModel* mode
         model->block_fsmn = (FsmnFilter*)esp_firevad_malloc(model->version, num_blocks * sizeof(FsmnFilter));
 
         for (uint32_t b = 0; b < num_blocks; b++) {
-            model->block_fc1[b].weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->block_fc1[b].weight_scale, model);
+            model->block_fc1[b].weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->block_fc1[b].weight_scale, &model->block_fc1[b].channel_scales, model);
             model->block_fc1[b].in_dim = P;
             model->block_fc1[b].out_dim = H;
-            model->block_fc1[b].bias = read_tensor(buf, data_len, &offset, &count, model->version, &model->block_fc1[b].bias_scale, model);
+            model->block_fc1[b].bias = read_tensor(buf, data_len, &offset, &count, model->version, &model->block_fc1[b].bias_scale, nullptr, model);
 
-            model->block_fc2[b].weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->block_fc2[b].weight_scale, model);
+            model->block_fc2[b].weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->block_fc2[b].weight_scale, &model->block_fc2[b].channel_scales, model);
             model->block_fc2[b].in_dim = H;
             model->block_fc2[b].out_dim = P;
             model->block_fc2[b].bias = nullptr;
 
-            model->block_fsmn[b].lookback_weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->block_fsmn[b].lookback_scale, model);
+            model->block_fsmn[b].lookback_weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->block_fsmn[b].lookback_scale, nullptr, model);
             model->block_fsmn[b].lookahead_weight = nullptr;
             if (model->arch.N2 > 0) {
-                model->block_fsmn[b].lookahead_weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->block_fsmn[b].lookahead_scale, model);
+                model->block_fsmn[b].lookahead_weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->block_fsmn[b].lookahead_scale, nullptr, model);
             }
         }
     }
@@ -563,23 +597,23 @@ int esp_firevad_load(const uint8_t* data, size_t data_len, EspFirevadModel* mode
     model->num_dnn_layers = M;
     if (M > 0) {
         model->dnn_layers = (DenseLayer*)esp_firevad_malloc(model->version, M * sizeof(DenseLayer));
-        model->dnn_layers[0].weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->dnn_layers[0].weight_scale, model);
+        model->dnn_layers[0].weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->dnn_layers[0].weight_scale, &model->dnn_layers[0].channel_scales, model);
         model->dnn_layers[0].in_dim = P;
         model->dnn_layers[0].out_dim = H;
-        model->dnn_layers[0].bias = read_tensor(buf, data_len, &offset, &count, model->version, &model->dnn_layers[0].bias_scale, model);
+        model->dnn_layers[0].bias = read_tensor(buf, data_len, &offset, &count, model->version, &model->dnn_layers[0].bias_scale, nullptr, model);
 
         for (uint32_t d = 1; d < M; d++) {
-            model->dnn_layers[d].weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->dnn_layers[d].weight_scale, model);
+            model->dnn_layers[d].weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->dnn_layers[d].weight_scale, &model->dnn_layers[d].channel_scales, model);
             model->dnn_layers[d].in_dim = H;
             model->dnn_layers[d].out_dim = H;
-            model->dnn_layers[d].bias = read_tensor(buf, data_len, &offset, &count, model->version, &model->dnn_layers[d].bias_scale, model);
+            model->dnn_layers[d].bias = read_tensor(buf, data_len, &offset, &count, model->version, &model->dnn_layers[d].bias_scale, nullptr, model);
         }
     }
 
-    model->out.weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->out.weight_scale, model);
+    model->out.weight = read_tensor(buf, data_len, &offset, &count, model->version, &model->out.weight_scale, &model->out.channel_scales, model);
     model->out.in_dim = H;
     model->out.out_dim = model->arch.odim;
-    model->out.bias = read_tensor(buf, data_len, &offset, &count, model->version, &model->out.bias_scale, model);
+    model->out.bias = read_tensor(buf, data_len, &offset, &count, model->version, &model->out.bias_scale, nullptr, model);
 
     model->cache_len = (model->arch.N1 > 1) ? (model->arch.N1 - 1) * model->arch.S1 : 0;
     if (model->cache_len > 0) {
@@ -610,7 +644,7 @@ int esp_firevad_load(const uint8_t* data, size_t data_len, EspFirevadModel* mode
     return 0;
 }
 
-void esp_firevad_infer_frame(EspFirevadModel* model, const float* features, bool apply_cmvn_flag, float* out_probs) {
+void IRAM_ATTR esp_firevad_infer_frame(EspFirevadModel* model, const float* features, bool apply_cmvn_flag, float* out_probs) {
     if (model == nullptr || features == nullptr) return;
 
     const uint32_t D = model->arch.D;

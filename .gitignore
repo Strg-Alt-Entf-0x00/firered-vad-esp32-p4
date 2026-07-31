@@ -32,19 +32,22 @@ venv/
 credentials.json
 secrets.json
 
-# IDE
-.vscode/
-.idea/
+# Hidden files and folders (all folders starting with .)
+.*/ 
+.*/
+
+# Specific exceptions (if needed - uncomment)
+# !.github/
+# !.vscode/settings.json
+
+# IDE specific files
 *.code-workspace
 *.swp
 *.swo
 *~
-.cache/
-.clangd-cache/
 compile_commands.json
 
 # OS
-.DS_Store
 Thumbs.db
 
 # Backups

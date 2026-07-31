@@ -85,6 +85,7 @@ firevad> help                              # Show all available commands
 firevad> model_list                        # List available .frvd models
 firevad> model_load firered_stream_vad_int8.frvd  # Load a model
 firevad> model_info                        # Show model architecture details
+firevad> test_file speech_welcome_constant_volume.wav  # Test with WAV file
 firevad> status                            # Display system status
 firevad> threshold 0.5                     # Set detection threshold (0.0-1.0)
 firevad> gain -s 2.0                       # Set software gain multiplier
@@ -93,6 +94,111 @@ firevad> stop                              # Stop VAD inference
 firevad> calibrate                         # Toggle calibration mode
 firevad> reset_stats                       # Reset statistics
 ```
+
+## Test Audio Samples
+
+The example includes 5 pre-converted WAV files (16kHz, 16-bit, Mono) for testing different detection scenarios:
+
+### 1. speech_welcome_constant_volume.wav (15s)
+- **Purpose**: Basic speech detection test
+- **Content**: "Welcome..." with natural pauses
+- **Volume**: Constant throughout
+- **Expected**: Stream-VAD/VAD should detect speech segments with high confidence
+
+### 2. speech_welcome_varied_volume.wav (15s)
+- **Purpose**: Robustness test for varying audio levels
+- **Content**: Same "Welcome..." phrase at different volumes
+- **Volume Profile**:
+  - 0-5s: 100% (Normal) - Should easily detect
+  - 5-10s: 30% (Quiet) - Should still detect
+  - 10-15s: 10% (Very Quiet) - Tests sensitivity limits
+- **Expected**: Tests model robustness to volume changes
+
+### 3. music_rock.wav (8.8s)
+- **Purpose**: Music detection (AED only)
+- **Content**: Guitar riffs + drums (instrumental)
+- **Expected**: 
+  - Stream-VAD/VAD: Should NOT detect as speech
+  - AED: Should classify as "Music"
+
+### 4. singing_vocal.wav (14s)
+- **Purpose**: Singing voice detection
+- **Content**: Pure singing voice (a cappella, no instruments)
+- **Expected**:
+  - Stream-VAD/VAD: May detect as speech (voice is present)
+  - AED: Should classify as "Singing"
+
+### 5. negative_birds.wav (15s)
+- **Purpose**: False-positive test
+- **Content**: Bird chirping sounds
+- **Expected**: All models should NOT detect as speech/music/singing
+
+### Testing Workflow
+
+```bash
+# 1. Load a model
+firevad> model_load firered_stream_vad_int8.frvd
+
+# 2. Test with speech (should detect high speech probability)
+firevad> test_file speech_welcome_constant_volume.wav
+
+# 3. Test robustness (watch probability decrease with volume)
+firevad> test_file speech_welcome_varied_volume.wav
+
+# 4. Negative test (should show low speech probability)
+firevad> test_file negative_birds.wav
+
+# 5. Adjust threshold if needed
+firevad> threshold 0.4
+firevad> test_file speech_welcome_constant_volume.wav
+
+# 6. Test AED model (requires loading AED model)
+firevad> model_load firered_aed_int8.frvd
+firevad> test_file music_rock.wav        # Should detect "Music"
+firevad> test_file singing_vocal.wav     # Should detect "Singing"
+```
+
+### Sample Output Format
+
+**Stream-VAD** (frame-by-frame, 10ms frames):
+```
+Processing with Stream-VAD (frame-by-frame)...
+Time(s) | Speech Prob | Status
+--------|-------------|--------
+   0.00 |       0.892 | SPEECH
+   1.00 |       0.745 | SPEECH
+   2.00 |       0.234 | silence
+   3.00 |       0.876 | SPEECH
+...
+
+=== Results ===
+Total frames:  1500
+Speech frames: 892 (59.5%)
+Threshold:     0.60
+```
+
+**Offline VAD** (1-second chunks):
+```
+Processing with Offline VAD (1-second chunks)...
+Chunk | Time(s) | Speech Prob | Status
+------|---------|-------------|--------
+    0 |     1.0 |       0.945 | SPEECH
+    1 |     2.0 |       0.823 | SPEECH
+    2 |     3.0 |       0.156 | silence
+...
+```
+
+**AED** (Audio Event Detection):
+```
+Processing with AED (Audio Event Detection)...
+Chunk | Time(s) |  Speech |   Music | Singing | Classification
+------|---------|---------|---------|---------|---------------
+    0 |     1.0 |   0.123 |   0.834 |   0.043 | Music
+    1 |     2.0 |   0.089 |   0.891 |   0.020 | Music
+...
+```
+
+
 
 ## Console Output Example
 
@@ -217,6 +323,10 @@ cd $IDF_PATH
 ./install.sh
 . ./export.sh
 ```
+
+## Audio Sample Files Attribution
+
+The example audio files in `example_wave/` are sourced from [Pixabay](https://pixabay.com/) and licensed under the [Pixabay License](https://pixabay.com/service/license-summary/) (free for commercial and non-commercial use, no attribution required). The original files have been edited and shortened for demonstration purposes.
 
 ## License
 

@@ -39,9 +39,10 @@ struct EspFirevadArchParams {
  */
 struct DenseLayer {
     const void* weight;    // [out_dim, in_dim] row-major (float* or int8_t*)
-    const void* bias;      // [out_dim] or nullptr if no bias
-    float weight_scale;
-    float bias_scale;
+    const void* bias;      // [out_dim] float32 (or nullptr if no bias)
+    float weight_scale;    // For global scale (v2)
+    float bias_scale;      // For global scale (v2, v3)
+    const float* channel_scales; // For per-channel scale (v4), array of size out_dim
     uint32_t in_dim;
     uint32_t out_dim;
 };
@@ -60,9 +61,13 @@ struct FsmnFilter {
  * Complete model state: architecture + weight pointers + streaming cache.
  */
 struct EspFirevadModel {
-    EspFirevadArchParams arch;
+    uint32_t model_type; // 0=VAD, 1=Stream-VAD, 2=AED
     bool is_int8;
     bool is_int16;
+    bool is_int8_per_ch;
+
+    // Architecture config
+    EspFirevadArchParams arch;
     int version;
 
     // CMVN normalization

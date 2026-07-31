@@ -1,0 +1,130 @@
+menu "FireVAD Audio Configuration"
+
+    config FIREVAD_ENABLE_AUDIO
+        bool "Enable Audio Input (Microphone)"
+        default n
+        help
+            Enable audio input support via I2S codec (e.g., ES8311).
+            When disabled, only file-based VAD testing is available.
+
+    menu "ES8311 Codec Configuration"
+        depends on FIREVAD_ENABLE_AUDIO
+
+        config FIREVAD_I2C_SCL_GPIO
+            int "I2C SCL GPIO"
+            default 8
+            range 0 54
+            help
+                GPIO pin for I2C clock line (SCL) to communicate with ES8311.
+                Default: GPIO8 (Waveshare ESP32-P4-WIFI6)
+
+        config FIREVAD_I2C_SDA_GPIO
+            int "I2C SDA GPIO"
+            default 7
+            range 0 54
+            help
+                GPIO pin for I2C data line (SDA) to communicate with ES8311.
+                Default: GPIO7 (Waveshare ESP32-P4-WIFI6)
+
+        config FIREVAD_I2C_FREQ_HZ
+            int "I2C Frequency (Hz)"
+            default 400000
+            help
+                I2C bus frequency for ES8311 communication.
+                Default: 400kHz (fast mode)
+
+        config FIREVAD_I2S_MCLK_GPIO
+            int "I2S Master Clock GPIO"
+            default 13
+            range 0 54
+            help
+                GPIO pin for I2S master clock (MCLK).
+                Default: GPIO13
+
+        config FIREVAD_I2S_BCLK_GPIO
+            int "I2S Bit Clock GPIO"
+            default 12
+            range 0 54
+            help
+                GPIO pin for I2S bit clock (BCLK).
+                Default: GPIO12
+
+        config FIREVAD_I2S_WS_GPIO
+            int "I2S Word Select GPIO"
+            default 10
+            range 0 54
+            help
+                GPIO pin for I2S word select / left-right clock (WS/LRCK).
+                Default: GPIO10
+
+        config FIREVAD_I2S_DIN_GPIO
+            int "I2S Data In GPIO (Microphone)"
+            default 11
+            range 0 54
+            help
+                GPIO pin for I2S data input from microphone.
+                Default: GPIO11
+
+        config FIREVAD_I2S_DOUT_GPIO
+            int "I2S Data Out GPIO (Speaker)"
+            default 9
+            range 0 54
+            help
+                GPIO pin for I2S data output to speaker (optional).
+                Default: GPIO9
+
+        config FIREVAD_PA_PIN_GPIO
+            int "Power Amplifier Enable GPIO"
+            default 53
+            range -1 54
+            help
+                GPIO pin to enable power amplifier (PA).
+                Set to -1 to disable PA control.
+                Default: GPIO53
+
+    endmenu
+
+    menu "Audio Parameters"
+        depends on FIREVAD_ENABLE_AUDIO
+
+        config FIREVAD_SAMPLE_RATE
+            int "Sample Rate (Hz)"
+            default 16000
+            help
+                Audio sample rate. Must be 16000 Hz for FireVAD models.
+
+        config FIREVAD_BITS_PER_SAMPLE
+            int "Bits Per Sample"
+            default 16
+            range 16 32
+            help
+                Audio bit depth. Must be 16 for FireVAD models.
+
+        config FIREVAD_MIC_GAIN
+            int "Default Microphone Gain (0-11)"
+            default 6
+            range 0 11
+            help
+                Default ES8311 microphone gain level.
+                0 = 0dB (minimum), 11 = 24dB (maximum)
+                Adjustable at runtime via 'gain -h' command.
+
+        config FIREVAD_SPEAKER_VOL
+            int "Default Speaker Volume (0-100)"
+            default 50
+            range 0 100
+            help
+                Default ES8311 speaker volume level (percentage).
+                Adjustable at runtime via 'speaker_vol' command.
+
+        config FIREVAD_BUFFER_SIZE
+            int "Audio Buffer Size (samples)"
+            default 1600
+            help
+                Number of samples per I2S buffer (must be multiple of 160).
+                Larger = more latency, smaller = more interrupts.
+                Default: 1600 (10 frames = 100ms @ 16kHz)
+
+    endmenu
+
+endmenu

@@ -59,10 +59,14 @@ void esp_firevad_dsp_extract_features(const int16_t* pcm_160, float* features_80
     
     for (int m = 0; m < 80; m++) {
         float mel_energy = 0.0f;
-        const float* mel_row = &KALDI_MEL_BASIS[m * 257];
-        for (int i = 0; i < 257; i++) {
-            mel_energy += power_spectrum[i] * mel_row[i];
+        uint8_t count = KALDI_MEL_COUNTS[m];
+        uint16_t offset = KALDI_MEL_OFFSETS[m];
+        
+        for (int i = 0; i < count; i++) {
+            uint16_t idx = KALDI_MEL_INDICES[offset + i];
+            mel_energy += power_spectrum[idx] * KALDI_MEL_WEIGHTS[offset + i];
         }
+        
         if (mel_energy < 1e-6f) mel_energy = 1e-6f;
         features_80[m] = logf(mel_energy);
     }
