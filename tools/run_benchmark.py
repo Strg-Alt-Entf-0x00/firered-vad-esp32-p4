@@ -25,13 +25,38 @@ MODELS = [
     "firered-stream-vad-int16.frvd",
     "firered-stream-vad-int8.frvd",
     "firered-stream-vad-int8-ch.frvd",
+    "firered-vad-fp32.frvd",
+    "firered-vad-int16.frvd",
+    "firered-vad-int8.frvd",
+    "firered-vad-int8-ch.frvd",
+    "firered-aed-fp32.frvd",
+    "firered-aed-int16.frvd",
+    "firered-aed-int8.frvd",
+    "firered-aed-int8-ch.frvd"
 ]
 
 WAV_FILES = [
-    "speech-welcome-constant-volume.wav",
-    "speech-welcome-varied-volume.wav",
-    "negative-birds.wav",
     "music-rock.wav",
+    "negative-birds.wav",
+    "noise-babble-english.wav",
+    "noise-babble-small-room.wav",
+    "noise-cafeteria.wav",
+    "noise-clock-tick.wav",
+    "noise-constant-white.wav",
+    "noise-electrical-buzz.wav",
+    "noise-gym-ambience.wav",
+    "noise-laundry-machine.wav",
+    "noise-light-fan.wav",
+    "noise-machine-room.wav",
+    "noise-mic-bumps.wav",
+    "noise-mic-static.wav",
+    "noise-office-ambience.wav",
+    "noise-pizzeria.wav",
+    "noise-server-fans.wav",
+    "singing-vocal.wav",
+    "speech-mic-test.wav",
+    "speech-welcome-constant-volume.wav",
+    "speech-welcome-varied-volume.wav"
 ]
 
 # Timeout in seconds per command
@@ -57,7 +82,9 @@ def wait_prompt(ser: serial.Serial, timeout: float) -> str:
         chunk = ser.read(ser.in_waiting or 1)
         if chunk:
             buf += chunk
-            if PROMPT in buf:
+            # Linenoise redraws the prompt during typing. We only want the final prompt.
+            clean = ansi_strip(buf.decode("utf-8", errors="ignore"))
+            if clean.endswith("firevad> ") or clean.endswith("firevad>"):
                 break
         else:
             time.sleep(0.005)
@@ -66,7 +93,12 @@ def wait_prompt(ser: serial.Serial, timeout: float) -> str:
 
 def cmd(ser: serial.Serial, command: str, timeout: float) -> str:
     """Send a command and wait for the prompt."""
-    ser.write((command + "\n").encode("utf-8"))
+    time.sleep(0.1)
+    ser.reset_input_buffer()
+    for char in command + "\r\n":
+        ser.write(char.encode("utf-8"))
+        ser.flush()
+        time.sleep(0.005)
     return wait_prompt(ser, timeout)
 
 
@@ -124,9 +156,11 @@ def run_benchmark(port: str, baud: int) -> list:
         print("        Make sure the IDF monitor is closed first.")
         sys.exit(1)
 
-    time.sleep(0.3)
+    print("[BENCH] Waiting for ESP32 to boot...")
+    # Read until we see the first prompt (or timeout after 5s)
+    wait_prompt(ser, 5.0)
 
-    # Ping the device
+    # Ping the device to ensure prompt is clean
     cmd(ser, "", TIMEOUT_SHORT)
 
     # Disable Pre-VAD so ALL frames go through the neural network
@@ -149,7 +183,7 @@ def run_benchmark(port: str, baud: int) -> list:
 
             # Run inference
             infer_out = cmd(ser, f"vad_infer_wav {wav}", TIMEOUT_INFER)
-            print(infer_out) # Print inference output for user debugging
+            # print(infer_out) # Commented out to prevent console spam
             
             # Read metrics
             met_out = cmd(ser, "vad_metrics", TIMEOUT_SHORT)
@@ -272,8 +306,8 @@ def main():
     parser = argparse.ArgumentParser(description="FireVAD ESP32-P4 Benchmark")
     parser.add_argument("--port", default="COM4",    help="Serial port (default: COM4)")
     parser.add_argument("--baud", default=115200,    type=int)
-    parser.add_argument("--out",  default="benchmark_results.md",
-                        help="Output markdown file (default: benchmark_results.md)")
+    parser.add_argument("--out",  default=None,
+                        help="Output markdown file (default: auto-generated in .docs with timestamp)")
     args = parser.parse_args()
 
     results = run_benchmark(args.port, args.baud)
@@ -284,6 +318,12 @@ def main():
     print("=" * 70)
 
     out_path = args.out
+    if out_path is None:
+        import os
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        out_path = os.path.join(script_dir, "..", f"{timestamp}_benchmark_results.md")
+
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(table)
     print(f"\n[BENCH] Results written to: {out_path}")

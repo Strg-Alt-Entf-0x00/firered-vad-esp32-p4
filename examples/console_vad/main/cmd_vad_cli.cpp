@@ -79,16 +79,29 @@ static int cmd_vad_model_info(int argc, char **argv) {
 }
 
 static int cmd_vad_model_list(int argc, char **argv) {
-    printf("\n%-30s | %-10s\n", "Filename", "Size");
-    printf("-------------------------------------------------\n");
-    
+    // Pass 1: find the longest filename
     DIR* dir = opendir(SPIFFS_MOUNT_POINT);
     if (!dir) return 1;
-    
+    int col_w = 8; // minimum width ("Filename")
     struct dirent* ent;
+    while ((ent = readdir(dir)) != NULL) {
+        if (!strstr(ent->d_name, ".frvd")) continue;
+        int len = strlen(ent->d_name);
+        if (len > col_w) col_w = len;
+    }
+    closedir(dir);
+    col_w += 2; // 2-char padding
+
+    // Pass 2: print table with exact column width
+    printf("\n%-*s | %s\n", col_w, "Filename", "Size");
+    for (int i = 0; i < col_w + 12; i++) printf("-");
+    printf("\n");
+
+    dir = opendir(SPIFFS_MOUNT_POINT);
+    if (!dir) return 1;
     int count = 0;
     while ((ent = readdir(dir)) != NULL) {
-        if (strstr(ent->d_name, ".frvd") == NULL) continue;
+        if (!strstr(ent->d_name, ".frvd")) continue;
         char path[MAX_FILE_PATH];
         snprintf(path, sizeof(path), "%s/%s", SPIFFS_MOUNT_POINT, ent->d_name);
         FILE* f = fopen(path, "rb");
@@ -96,7 +109,7 @@ static int cmd_vad_model_list(int argc, char **argv) {
         fseek(f, 0, SEEK_END);
         size_t size = ftell(f);
         fclose(f);
-        printf("%-30s | %7zu KB\n", ent->d_name, size / 1024);
+        printf("%-*s | %7zu KB\n", col_w, ent->d_name, size / 1024);
         count++;
     }
     closedir(dir);
@@ -412,31 +425,41 @@ static int cmd_vad_infer_mic(int argc, char **argv) {
 }
 
 static int cmd_fs_wav_list(int argc, char **argv) {
+    // Pass 1: find the longest filename
+    int col_w = 8; // minimum width ("Filename")
     DIR *dir = opendir(SPIFFS_MOUNT_POINT);
     if (!dir) {
         printf("[ERROR] Failed to open directory\n");
         return 1;
     }
-
-    printf("\nFilename                       | Size\n");
-    printf("-------------------------------------------------\n");
-    
     struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (!strstr(entry->d_name, ".wav")) continue;
+        int len = strlen(entry->d_name);
+        if (len > col_w) col_w = len;
+    }
+    closedir(dir);
+    col_w += 2;
+
+    // Pass 2: print table with exact column width
+    printf("\n%-*s | %s\n", col_w, "Filename", "Size");
+    for (int i = 0; i < col_w + 12; i++) printf("-");
+    printf("\n");
+
+    dir = opendir(SPIFFS_MOUNT_POINT);
+    if (!dir) return 1;
     bool found = false;
     while ((entry = readdir(dir)) != NULL) {
-        if (strstr(entry->d_name, ".wav")) {
-            char filepath[MAX_FILE_PATH];
-            snprintf(filepath, sizeof(filepath), "%s/%s", SPIFFS_MOUNT_POINT, entry->d_name);
-            struct stat st;
-            if (stat(filepath, &st) == 0) {
-                printf("%-30s | %7ld KB\n", entry->d_name, st.st_size / 1024);
-                found = true;
-            }
+        if (!strstr(entry->d_name, ".wav")) continue;
+        char filepath[MAX_FILE_PATH];
+        snprintf(filepath, sizeof(filepath), "%s/%s", SPIFFS_MOUNT_POINT, entry->d_name);
+        struct stat st;
+        if (stat(filepath, &st) == 0) {
+            printf("%-*s | %7ld KB\n", col_w, entry->d_name, st.st_size / 1024);
+            found = true;
         }
     }
-    if (!found) {
-        printf("No WAV files found in SPIFFS.\n");
-    }
+    if (!found) printf("No WAV files found in SPIFFS.\n");
     printf("\n");
     closedir(dir);
     return 0;

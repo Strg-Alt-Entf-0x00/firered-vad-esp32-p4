@@ -102,8 +102,9 @@ struct EspFirevadModel {
     uint8_t* weight_buffer;
     size_t weight_buffer_size;
 
-    void* tensor_ptrs[64];
+    void** tensor_ptrs;
     uint32_t num_tensors;
+    uint32_t max_tensors;
 
     // Scratch buffers for inference
     float* scratch_h;   // [H]

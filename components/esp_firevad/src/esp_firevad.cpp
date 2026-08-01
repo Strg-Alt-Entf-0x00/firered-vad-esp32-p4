@@ -396,6 +396,30 @@ static uint32_t read_u32(const uint8_t* data, size_t offset) {
          | ((uint32_t)data[offset + 3] << 24);
 }
 
+static void register_tensor_ptr(EspFirevadModel* model, void* ptr) {
+    if (!ptr || !model) return;
+    if (model->num_tensors >= model->max_tensors) {
+        uint32_t new_max = model->max_tensors + 128;
+        void** new_ptrs = nullptr;
+#ifdef ESP_PLATFORM
+        new_ptrs = (void**)heap_caps_realloc(model->tensor_ptrs, new_max * sizeof(void*), MALLOC_CAP_SPIRAM);
+        if (!new_ptrs) {
+            new_ptrs = (void**)heap_caps_realloc(model->tensor_ptrs, new_max * sizeof(void*), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        }
+#else
+        new_ptrs = (void**)realloc(model->tensor_ptrs, new_max * sizeof(void*));
+#endif
+        if (new_ptrs) {
+            model->tensor_ptrs = new_ptrs;
+            model->max_tensors = new_max;
+        } else {
+            esp_firevad_LOGE("Failed to grow tensor tracking array! Memory leak warning!");
+            return;
+        }
+    }
+    model->tensor_ptrs[model->num_tensors++] = ptr;
+}
+
 static const void* read_tensor(const uint8_t* data, size_t data_len, size_t* offset,
                                uint32_t* out_count, int version, float* out_scale, const float** out_channel_scales, EspFirevadModel* model) 
 {
@@ -428,9 +452,7 @@ static const void* read_tensor(const uint8_t* data, size_t data_len, size_t* off
 #endif
                 if (scales) {
                     memcpy(scales, data + *offset, num_channels * sizeof(float));
-                    if (model->num_tensors < 64) {
-                        model->tensor_ptrs[model->num_tensors++] = scales;
-                    }
+                    register_tensor_ptr(model, scales);
                 }
                 *out_channel_scales = scales;
             }
@@ -473,9 +495,7 @@ static const void* read_tensor(const uint8_t* data, size_t data_len, size_t* off
 
     if (ptr) {
         memcpy(ptr, data + *offset, data_bytes);
-        if (model->num_tensors < 64) {
-            model->tensor_ptrs[model->num_tensors++] = ptr;
-        }
+        register_tensor_ptr(model, ptr);
     }
     
     *offset += data_bytes;
@@ -501,6 +521,19 @@ int esp_firevad_load(const uint8_t* data, size_t data_len, EspFirevadModel* mode
     model->is_int16 = (version == 3);
     model->is_int8_per_ch = (version == 4);
     model->num_tensors = 0;
+    model->max_tensors = 128;
+#ifdef ESP_PLATFORM
+    model->tensor_ptrs = (void**)heap_caps_malloc(model->max_tensors * sizeof(void*), MALLOC_CAP_SPIRAM);
+    if (!model->tensor_ptrs) {
+        model->tensor_ptrs = (void**)heap_caps_malloc(model->max_tensors * sizeof(void*), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+#else
+    model->tensor_ptrs = (void**)malloc(model->max_tensors * sizeof(void*));
+#endif
+    if (!model->tensor_ptrs) {
+        esp_firevad_LOGE("Failed to allocate tensor tracking array");
+        return -5;
+    }
 
     const uint8_t* buf = data;
     model->weight_buffer = nullptr;
@@ -745,6 +778,9 @@ void esp_firevad_free(EspFirevadModel* model) {
         for (uint32_t r = 0; r < model->arch.R; r++) esp_firevad_free_ptr(model->fsmn_caches[r]);
         esp_firevad_free_ptr(model->fsmn_caches);
     }
+    if (model->fsmn_cache_heads != nullptr) {
+        esp_firevad_free_ptr(model->fsmn_cache_heads);
+    }
     esp_firevad_free_ptr(model->block_fc1);
     esp_firevad_free_ptr(model->block_fc2);
     esp_firevad_free_ptr(model->block_fsmn);
@@ -757,14 +793,18 @@ void esp_firevad_free(EspFirevadModel* model) {
     if (model->scratch_in_q16) esp_firevad_free_ptr(model->scratch_in_q16);
 
     // Free individually allocated tensors
-    for (uint32_t i = 0; i < model->num_tensors; i++) {
+    if (model->tensor_ptrs != nullptr) {
+        for (uint32_t i = 0; i < model->num_tensors; i++) {
 #ifdef ESP_PLATFORM
-        heap_caps_free(model->tensor_ptrs[i]);
+            heap_caps_free(model->tensor_ptrs[i]);
 #else
-        free(model->tensor_ptrs[i]);
+            free(model->tensor_ptrs[i]);
 #endif
+        }
+        esp_firevad_free_ptr(model->tensor_ptrs);
     }
     model->num_tensors = 0;
+    model->max_tensors = 0;
 
     esp_firevad_free_ptr(model->weight_buffer);
     memset(model, 0, sizeof(EspFirevadModel));

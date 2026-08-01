@@ -15,21 +15,28 @@ This repository strips away external deep-learning dependencies (no TFLite, no O
 
 Running advanced speech models on microcontrollers requires navigating severe hardware constraints. The following data represents the real-world performance on the ESP32-P4 (Dual-Core RISC-V @ 400MHz, 32MB PSRAM).
 
-### Inference Latency
-- **Processing Time**: ~4.5 ms per 10ms/30ms audio frame chunk (using `int8_ch` models).
-- **Real-Time Factor (RTF)**: ~0.15 (inference is roughly 6x faster than real-time audio acquisition).
-- **Memory Footprint**: ~570 KB model size in PSRAM. Run-time buffers allocate perfectly into the internal 768 KB high-speed SRAM.
+### The PSRAM Bandwidth Bottleneck
 
-> [!WARNING]
-> **Hardware Requirements & Concurrency**
-> The ESP32-P4 features a Dual-Core architecture. To ensure glitch-free real-time audio, the VAD inference loop **must** run on a dedicated RTOS task (e.g., Core 1, Priority 22) while audio sampling and network stacks run on the other core. Single-core execution will likely result in dropped frames or Watchdog timeouts.
+Our empirical benchmarks revealed a critical hardware limitation: The ESP32-P4's Octal-SPI PSRAM bandwidth (~200-400 MB/s) is insufficient for large, unoptimized models. FP32 variants demand too much memory bandwidth, causing the CPU to stall while waiting for weights.
+
+**Benchmark Results (10ms Audio Frame):**
+| Model Type                 | Avg Latency | RT-Load  | Viable for Real-Time? |
+|----------------------------|-------------|----------|-----------------------|
+| `stream-fp32`              | 35.2 ms     | 352%     | ❌ No (Audio Drops)    |
+| `firered-vad-int8` (dense) |  4.7 ms     |  47%     | ❌ No (Context lost)   |
+| **`stream-int8-ch`**       | **4.5 ms**  | **45%**  | ✅ **Yes (Recommended)** |
+
+*RT-Load > 100% means inference takes longer than the 10ms audio chunk.*
+
+**Conclusion**: You **must** use the `stream-int8` or `stream-int8-ch` models. They reduce memory bandwidth by 4x (via 8-bit quantization) and use a FSMN ring-buffer to fit entirely in the high-speed L2 cache, enabling inference in ~4.5ms (well under the 10ms real-time budget).
 
 ### Quantization: The `int8_ch` Necessity
+
 When quantizing the DFSMN architecture from FP32 down to INT8, we encountered significant accuracy degradation using standard per-tensor quantization (`int8`). The variance in weight distribution across neurons in DFSMN layers is too wide for a single scaling factor.
 
 **Solution: Per-Channel Quantization (`int8_ch`)**
 We implemented per-channel quantization, assigning individual scale factors to each output neuron. 
-- **`int8_ch` (Recommended)**: Preserves near-FP32 accuracy by accurately capturing the dynamic range of each channel.
+- **`int8_ch` (Recommended)**: Preserves near-FP32 accuracy by accurately capturing the dynamic range of each channel, with virtually zero performance penalty (4.54ms vs 4.47ms).
 - **ESP32-P4 PIE Alignment**: The ESP32-P4 Vector unit (PIE) instructions (e.g., `esp.vmulas.s8.xacc`) enforce strict 16-byte memory alignment. Our runtime dynamically aligns the quantized weight matrices to ensure maximum vector-instruction throughput without CPU emulation traps.
 
 ## Known Limitations & Accuracies
@@ -40,8 +47,10 @@ We prioritize scientific honesty over marketing claims. Please consider the foll
 2. **Microphone Dependency**: The model expects clean 16kHz PCM audio. A high-quality I2S microphone (e.g., INMP441) with hardware gain control is highly recommended. The ESP-IDF software does not include noise suppression out-of-the-box.
 3. **Hardware DAC Constraints**: Relying on internal 8-bit DACs or raw ADC input for voice processing is actively discouraged due to poor signal quality. Use digital I2S peripherals.
 
-### Future Optimization Roadmap (Sparse Mel-Filterbanks)
-Our research (`.docs/OPTIMIZATION_RESEARCH.txt`) indicates that the 80-bin Mel-Filterbank matrix is ~95% sparse. Current implementations perform dense matrix multiplications. Future updates will implement Compressed Sparse Row (CSR) logic for the feature extraction pipeline, which theoretically reduces feature extraction latency by an additional 40%.
+### Roadmap
+The architecture is actively being evolved for professional deployment. Current development priorities include:
+- **Sparse Mel-Filterbanks**: The 80-bin Mel-Filterbank matrix is ~95% sparse. Moving from dense to Compressed Sparse Row (CSR) logic will significantly reduce feature extraction latency.
+- **Professional Power Architecture**: Implementing a multi-stage wake pipeline (LP-Core energy detection → HP-Core VAD) with adaptive noise-floor calibration to reach <5mW idle power.
 
 ## Using the Component in Your Project
 
