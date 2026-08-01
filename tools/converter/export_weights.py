@@ -213,8 +213,8 @@ def export_binary(model_dir: str, output_dir: str, quantize_int8: bool = False, 
         print(f"[INFO] Confirmed from checkpoint args: N1={arch['N1']} S1={arch['S1']} N2={arch['N2']} S2={arch['S2']}")
 
     model_type = detect_model_type(model_dir)
-    model_type_names = {0: "VAD", 1: "Stream-VAD", 2: "AED"}
-    print(f"[INFO] Model type: {model_type_names.get(model_type, 'Unknown')}")
+    model_type_names = {0: "vad", 1: "stream-vad", 2: "aed"}
+    print(f"[INFO] Model type: {model_type_names.get(model_type, 'unknown')}")
 
     # ---- Load CMVN ----
     cmvn_dim = 0
@@ -293,8 +293,10 @@ def export_binary(model_dir: str, output_dir: str, quantize_int8: bool = False, 
     ver = VERSION_INT8_PER_CH if quantize_int8_per_ch else (VERSION_INT16 if quantize_int16 else (VERSION_INT8 if quantize_int8 else VERSION_FLOAT32))
     
     # ---- Write to binary ----
-    bin_path = os.path.join(output_dir, f"firered_{model_type_names.get(model_type, 'Unknown').lower()}_{'int8_ch' if quantize_int8_per_ch else ('int16' if quantize_int16 else ('int8' if quantize_int8 else 'fp32'))}.frvd")
-    json_path = os.path.join(output_dir, f"firered_{model_type_names.get(model_type, 'Unknown').lower()}_{'int8_ch' if quantize_int8_per_ch else ('int16' if quantize_int16 else ('int8' if quantize_int8 else 'fp32'))}_debug.json")
+    quant_suffix = 'int8-ch' if quantize_int8_per_ch else ('int16' if quantize_int16 else ('int8' if quantize_int8 else 'fp32'))
+    model_name = model_type_names.get(model_type, 'unknown')
+    bin_path = os.path.join(output_dir, f"firered-{model_name}-{quant_suffix}.frvd")
+    json_path = os.path.join(output_dir, f"firered-{model_name}-{quant_suffix}-debug.json")
 
     with open(bin_path, "wb") as f:
         # ---- Header (32 bytes) ----
@@ -421,7 +423,7 @@ def export_binary(model_dir: str, output_dir: str, quantize_int8: bool = False, 
     debug_data["_meta"] = {
         "magic": MAGIC.decode(),
         "version": ver,
-        "model_type": model_type_names.get(model_type, "Unknown"),
+        "model_type": model_type_names.get(model_type, "unknown"),
         "total_params": total_params,
         "quantize_int8": quantize_int8,
         "file_size_bytes": file_size,

@@ -55,7 +55,7 @@ Once the firmware is running, type commands into the serial monitor.
 | Command | Description |
 |---------|-------------|
 | `model_list` | Lists all `.frvd` models found in the SPIFFS partition. |
-| `model_load <path>` | Loads a model into PSRAM. Example: `model_load stream-vad/int8/firered_stream-vad_int8_ch.frvd` |
+| `model_load <path>` | Loads a model into PSRAM. Example: `model_load stream-vad/int8-ch/firered-stream-vad-int8-ch.frvd` |
 | `model_info` | Displays architecture details (dims, version) of the loaded model. |
 | `play_wav <path>` | Runs VAD inference on a test WAV file. Example: `play_wav example_wave/speech-welcome-varied-volume.wav` |
 | `start` | Starts the live microphone inference task (if I2S is configured). |

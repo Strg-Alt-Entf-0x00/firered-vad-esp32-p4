@@ -24,7 +24,7 @@ MODELS = [
     "firered-stream-vad-fp32.frvd",
     "firered-stream-vad-int16.frvd",
     "firered-stream-vad-int8.frvd",
-    "firered_stream-vad_int8_ch.frvd",
+    "firered-stream-vad-int8-ch.frvd",
 ]
 
 WAV_FILES = [
