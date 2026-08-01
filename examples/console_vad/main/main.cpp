@@ -23,27 +23,22 @@
 static const char* TAG = "MAIN";
 
 static void print_banner(void) {
-    printf("\n");
-    printf("╔════════════════════════════════════════════════════════════════╗\n");
-    printf("║                                                                ║\n");
-    printf("║            FireVAD Console - ESP32-P4 Edition                  ║\n");
-    printf("║                                                                ║\n");
-    printf("║     Professional Voice Activity Detection System               ║\n");
-    printf("║                                                                ║\n");
-    printf("╚════════════════════════════════════════════════════════════════╝\n");
-    printf("\n");
-    
     esp_chip_info_t chip_info;
     esp_chip_info(&chip_info);
     
-    printf("Hardware: ESP32-P4 rev %d.%d, %d cores\n",
+    printf("\n");
+    printf("  FIREVAD CONSOLE\n");
+    printf("  ESP32-P4 Edition\n");
+    printf("  --------------------------------------------------\n");
+    printf("  Hardware : ESP32-P4 rev %d.%d (%d-Core @ 400MHz)\n", 
            chip_info.revision / 100, chip_info.revision % 100, chip_info.cores);
-    
-    printf("Features:\n");
-    printf("  • Stream-VAD    : Real-time detection\n");
-    printf("  • Console REPL  : Interactive command interface\n");
-    printf("  • Record & Play : Full audio testing loop\n");
-    printf("  • Metrics       : Latency and CPU cycle profiling\n\n");
+    printf("  Memory   : 32MB PSRAM / 768KB SRAM\n");
+    printf("  Version  : v1.1.0\n\n");
+    printf("  Features:\n");
+    printf("  - Stream-VAD    : Real-time detection\n");
+    printf("  - Console REPL  : Interactive command interface\n");
+    printf("  - Record & Play : Full audio testing loop\n");
+    printf("  - Metrics       : Latency and CPU profiling\n\n");
 }
 
 static esp_err_t mount_spiffs(void) {
