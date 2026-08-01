@@ -82,8 +82,7 @@ extern "C" void app_main(void) {
     esp_firevad_dsp_init();
     audio_manager_init();
     
-    // Test the speaker with a boot chime sequence
-    audio_manager_set_speaker_vol(100);
+    // Play startup chime (volume is set internally by start_playback)
     audio_manager_play_boot_sequence();
     
     // Auto-calibrate background noise for 1 second and enable Pre-VAD (1.5x)
