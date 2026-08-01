@@ -45,3 +45,4 @@ tools/backup/backups/*.zip
 original_models/
 .vscode/
 .docs/
+.clangd

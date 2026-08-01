@@ -293,7 +293,6 @@ static int cmd_play_wav(int argc, char **argv) {
     }
     
     bool data_found = false;
-    uint32_t data_length = 0;
     while (!feof(f)) {
         char tag[4];
         uint32_t size;
@@ -302,7 +301,6 @@ static int cmd_play_wav(int argc, char **argv) {
         
         if (memcmp(tag, "data", 4) == 0) {
             data_found = true;
-            data_length = size;
             break;
         }
         fseek(f, size, SEEK_CUR);

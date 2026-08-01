@@ -162,10 +162,6 @@ static void IRAM_ATTR dense_forward(const DenseLayer* layer, const float* input,
         
         const int8_t* W = (const int8_t*)layer->weight;
         
-        static int align_print = 0;
-        if (align_print++ < 2) {
-            printf("DEBUG: W=%p (aligned=%d), in_q=%p (aligned=%d), channel_scales=%p\n", W, ((uintptr_t)W % 16 == 0), in_q, ((uintptr_t)in_q % 16 == 0), layer->channel_scales);
-        }
 
         for (uint32_t i = 0; i < layer->in_dim; i++) {
             float val = input[i] * inv_scale;
@@ -643,7 +639,7 @@ int esp_firevad_load(const uint8_t* data, size_t data_len, EspFirevadModel* mode
 void IRAM_ATTR __attribute__((aligned(16))) esp_firevad_infer_frame(EspFirevadModel* model, const float* features, bool apply_cmvn_flag, float* out_probs) {
     if (model == nullptr || features == nullptr) return;
 
-    uint32_t t_start = esp_cpu_get_cycle_count();
+
     const uint32_t D = model->arch.D;
     const uint32_t H = model->arch.H;
     const uint32_t P = model->arch.P;
@@ -719,8 +715,6 @@ void IRAM_ATTR __attribute__((aligned(16))) esp_firevad_infer_frame(EspFirevadMo
     dense_forward(&model->out, h, logits, model);
     t1 = esp_cpu_get_cycle_count(); t_dense += (t1 - t0);
     
-    static int p_cnt = 0;
-    if (p_cnt++ % 100 == 0) printf("Infer: dense=%d, fsmn=%d\n", (int)t_dense, (int)t_fsmn);
     
     if (out_probs) {
         uint32_t out_dim = (model->arch.odim < 8) ? model->arch.odim : 8;
