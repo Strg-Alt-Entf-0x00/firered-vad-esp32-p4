@@ -18,7 +18,6 @@ This repository strips away external deep-learning dependencies (no TFLite, no O
 
 All numbers below are **real measurements** from the ESP32-P4 (Dual-Core RISC-V @ 360MHz, 32MB PSRAM),
 benchmarked against 21 diverse audio sources.
-Source: [`.docs/2026-08-01_09-42-45_benchmark_results.md`](.docs/2026-08-01_09-42-45_benchmark_results.md)
 
 ### The PSRAM Bandwidth Bottleneck
 
