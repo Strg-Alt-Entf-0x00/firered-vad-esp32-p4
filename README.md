@@ -4,66 +4,105 @@ A highly optimized, bare-bones native C++ implementation of the **FireRedVAD** V
 
 This repository strips away external deep-learning dependencies (no TFLite, no ONNX runtime) and executes standard DFSMN inference directly via bare-metal matrix-vector operations. It is designed to be as lightweight and fast as possible while fully running in local PSRAM and Flash.
 
+**Models:** https://huggingface.co/Strg-Alt-Entf-0x00/FireRedVAD-ESP32-P4
+
 ## Core Features & Architecture
 
 - **Pure C++ Inference**: Zero heavy dependencies. Uses only `esp-dsp` for rapid audio feature extraction (FFT and Mel-Filterbanks).
-- **Offline ML Execution**: 100% offline inference ensuring strict privacy. Models are stored dynamically on flash or compiled into the binary.
+- **Offline ML Execution**: 100% offline inference ensuring strict privacy. Models are stored on LittleFS flash.
 - **Dynamic Feature Extraction**: Real-time extraction of 80-dimensional log-mel filterbank features from raw 16kHz PCM audio buffers.
 - **DFSMN Architecture**: Implements Deep Feedforward Sequential Memory Networks (DFSMN) using a highly efficient memory ring-buffer to store historical states.
+- **Asynchronous Audio I/O**: FreeRTOS Ringbuffer on Core 1 for lock-free, stall-free I2S TX. LittleFS for model storage.
 
 ## Technical Specifications & Performance
 
-Running advanced speech models on microcontrollers requires navigating severe hardware constraints. The following data represents the real-world performance on the ESP32-P4 (Dual-Core RISC-V @ 400MHz, 32MB PSRAM).
+All numbers below are **real measurements** from the ESP32-P4 (Dual-Core RISC-V @ 360MHz, 32MB PSRAM),
+benchmarked against 21 diverse audio sources.
+Source: [`.docs/2026-08-01_09-42-45_benchmark_results.md`](.docs/2026-08-01_09-42-45_benchmark_results.md)
 
 ### The PSRAM Bandwidth Bottleneck
 
-Our empirical benchmarks revealed a critical hardware limitation: The ESP32-P4's Octal-SPI PSRAM bandwidth (~200-400 MB/s) is insufficient for large, unoptimized models. FP32 variants demand too much memory bandwidth, causing the CPU to stall while waiting for weights.
+Our empirical benchmarks revealed a critical hardware limitation: The ESP32-P4's Octal-SPI PSRAM
+bandwidth is insufficient for large, unoptimized models. FP32 variants demand too much memory
+bandwidth, causing the CPU to stall while waiting for weights. INT16 variants are paradoxically
+**even slower than FP32** due to conversion overhead on the RISC-V pipeline.
 
-**Benchmark Results (10ms Audio Frame):**
-| Model Type                 | Avg Latency | RT-Load  | Viable for Real-Time? |
-|----------------------------|-------------|----------|-----------------------|
-| `stream-fp32`              | 35.2 ms     | 352%     | ❌ No (Audio Drops)    |
-| `firered-vad-int8` (dense) |  4.7 ms     |  47%     | ❌ No (Context lost)   |
-| **`stream-int8-ch`**       | **4.5 ms**  | **45%**  | ✅ **Yes (Recommended)** |
+### Benchmark Results (10ms audio frame = 10,000 µs real-time budget)
 
-*RT-Load > 100% means inference takes longer than the 10ms audio chunk.*
+| Model | Avg Latency | CPU Cycles | RT Load | Verdict |
+|---|---|---|---|---|
+| `stream-fp32` | 35,216 µs | 12,678,649 | 352% | No — 35x over budget |
+| `stream-int16` | 43,499 µs | 15,660,528 | 435% | No — **slower than FP32** |
+| `stream-int8` | **4,470 µs** | 1,610,007 | **44.7%** | Yes — 7.87x faster than FP32 |
+| **`stream-int8-ch`** | **4,538 µs** | 1,634,483 | **45.4%** | **Yes — Recommended** |
+| `vad-fp32` | 35,025 µs | 12,609,993 | 350% | No — batch only |
+| `vad-int16` | 43,613 µs | 15,701,420 | 436% | No — batch only |
+| `vad-int8` | 4,705 µs | 1,694,745 | 47.0% | Yes — batch only |
+| **`vad-int8-ch`** | **4,726 µs** | 1,702,164 | **47.3%** | **Yes — batch Recommended** |
 
-**Conclusion**: You **must** use the `stream-int8` or `stream-int8-ch` models. They reduce memory bandwidth by 4x (via 8-bit quantization) and use a FSMN ring-buffer to fit entirely in the high-speed L2 cache, enabling inference in ~4.5ms (well under the 10ms real-time budget).
+*RT Load = percentage of the 10ms real-time frame budget consumed.*
 
-### Quantization: The `int8_ch` Necessity
+**Critical note on INT16:** Do not use INT16 for real-time applications. It is 23% **slower** than FP32
+on the ESP32-P4 RISC-V pipeline due to the lack of native INT16 vector instructions.
+Use INT8 or INT8-CH exclusively for real-time workloads.
 
-When quantizing the DFSMN architecture from FP32 down to INT8, we encountered significant accuracy degradation using standard per-tensor quantization (`int8`). The variance in weight distribution across neurons in DFSMN layers is too wide for a single scaling factor.
+### Quantization: Why INT8-CH is Required for Production
 
-**Solution: Per-Channel Quantization (`int8_ch`)**
-We implemented per-channel quantization, assigning individual scale factors to each output neuron. 
-- **`int8_ch` (Recommended)**: Preserves near-FP32 accuracy by accurately capturing the dynamic range of each channel, with virtually zero performance penalty (4.54ms vs 4.47ms).
-- **ESP32-P4 PIE Alignment**: The ESP32-P4 Vector unit (PIE) instructions (e.g., `esp.vmulas.s8.xacc`) enforce strict 16-byte memory alignment. Our runtime dynamically aligns the quantized weight matrices to ensure maximum vector-instruction throughput without CPU emulation traps.
+Standard per-tensor INT8 quantization (`int8`) assigns **one** global scale factor per weight matrix.
+DFSMN architectures have wide variance in weight distribution across output channels — a single
+scale factor cannot capture this range accurately, causing silent accuracy degradation.
 
-## Known Limitations & Accuracies
+**Per-Channel INT8 (`int8-ch`, Version 4 in the `.frvd` format)** assigns **one scale factor
+per output channel**. This preserves near-FP32 accuracy at INT8 speed and memory cost.
 
-We prioritize scientific honesty over marketing claims. Please consider the following limitations before production deployment:
+| | int8 | int8-ch | int16 | fp32 |
+|---|---|---|---|---|
+| `.frvd` version | 2 | 4 | 3 | 1 |
+| Avg latency (P4 @ 360MHz) | 4.47ms | 4.54ms | 43.5ms | 35.2ms |
+| RT load | 44.7% | 45.4% | 435% | 352% |
+| Accuracy vs FP32 | Degraded | Near-identical | High | Reference |
+| Usable for real-time | Yes | Yes | No | No |
 
-1. **Background Noise Susceptibility**: FireRedVAD performs exceptionally well in quiet or moderately noisy environments. However, in low Signal-to-Noise Ratio (SNR) environments (e.g., loud machinery, wind), false positive rates increase. 
-2. **Microphone Dependency**: The model expects clean 16kHz PCM audio. A high-quality I2S microphone (e.g., INMP441) with hardware gain control is highly recommended. The ESP-IDF software does not include noise suppression out-of-the-box.
-3. **Hardware DAC Constraints**: Relying on internal 8-bit DACs or raw ADC input for voice processing is actively discouraged due to poor signal quality. Use digital I2S peripherals.
+## Known Limitations (Scientific Honesty)
+
+We prioritize scientific honesty over marketing claims. Please consider the following limitations
+before production deployment:
+
+1. **Background Noise Susceptibility**: FireRedVAD performs exceptionally well in quiet or moderately
+   noisy environments. In low SNR conditions (loud machinery, wind), false positive rates increase.
+   Measured noise floor: `noise-clock-tick` → 0.4% speech, `noise-cafeteria` → ~60% speech
+   (the model correctly detects babble noise as speech-like).
+
+2. **INT16 Anomaly**: INT16 models show paradoxically higher latency than FP32 (435% vs 352% RT load)
+   on the ESP32-P4. This is a confirmed RISC-V pipeline characteristic, not a bug. Do not use INT16
+   for any real-time path.
+
+3. **Microphone Dependency**: The model expects clean 16kHz PCM audio. A high-quality I2S microphone
+   (e.g., INMP441) with hardware gain control is required. No built-in noise suppression.
+
+4. **APLL Sharing**: When I2S0 (ES8311 codec, TX) and I2S1 (INMP441, RX) are both active, the
+   shared APLL runs at 8,191,999 Hz instead of 8,192,000 Hz (1 Hz deviation). This is expected
+   behavior and is actually ideal for AEC — both ports are locked to the same clock.
 
 ### Roadmap
-The architecture is actively being evolved for professional deployment. Current development priorities include:
-- **Sparse Mel-Filterbanks**: The 80-bin Mel-Filterbank matrix is ~95% sparse. Moving from dense to Compressed Sparse Row (CSR) logic will significantly reduce feature extraction latency.
-- **Professional Power Architecture**: Implementing a multi-stage wake pipeline (LP-Core energy detection → HP-Core VAD) with adaptive noise-floor calibration to reach <5mW idle power.
+
+- **Sparse Mel-Filterbanks**: The 80-bin Mel-Filterbank matrix is ~95% sparse. Moving to
+  Compressed Sparse Row (CSR) logic will significantly reduce feature extraction latency.
+- **Professional Power Architecture**: Multi-stage wake pipeline (LP-Core energy detection →
+  HP-Core VAD) with adaptive noise-floor calibration targeting <5mW idle power.
 
 ## Using the Component in Your Project
 
 The core component is isolated in `components/esp_firevad`.
 
-Simply copy the `components/esp_firevad` directory into your project's `components` folder, or add it via your `idf_component.yml`.
+Copy `components/esp_firevad` into your project's `components` folder, or add it via `idf_component.yml`.
 
 In your `main.cpp`:
 ```cpp
 #include "esp_firevad.h"
 #include "esp_firevad_dsp.h"
 
-// 1. Load the model from memory or SPIFFS
+// 1. Load the model from LittleFS
 EspFirevadModel model;
 esp_firevad_load(frvd_binary_data, data_len, &model);
 
@@ -83,7 +122,9 @@ if (prob > 0.6f) {
 
 > [!TIP]
 > **Example Application**
-> For a full, interactive implementation including model downloading from HuggingFace and SPIFFS flashing, see the [Console Example](examples/console_vad/README.md).
+> For a full, interactive implementation including model downloading from HuggingFace and LittleFS flashing, see the [Console Example](examples/console_vad/README.md).
 
 ## License
-This project is licensed under the **Apache License 2.0** - see the `LICENSE` file for details. Based on the architecture of FireRedVAD.
+
+This project is licensed under the **Apache License 2.0** — see the `LICENSE` file for details.
+Based on the architecture of [FireRedVAD](https://github.com/FireRedTeam/FireRedVAD) by Xiaohongshu (FireRedTeam).

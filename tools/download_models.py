@@ -140,7 +140,7 @@ def main():
     print(f"1. cd converter")
     print(f"2. python export_weights.py --all --output-dir ../converted_models")
     print(f"   or")
-    print(f"   python export_weights.py --model-dir {args.output_dir}/Stream-VAD --output-dir ../converted_models --quantize-int8")
+    print(f"   python export_weights.py --model-dir {args.output_dir}/Stream-VAD --output-dir ../converted_models --model-type stream-vad --quantize-int8-per-ch")
     print()
 
 
