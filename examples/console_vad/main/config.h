@@ -58,7 +58,7 @@ extern "C" {
 // File System Configuration
 // ============================================================================
 
-#define SPIFFS_MOUNT_POINT          "/spiffs"         ///< SPIFFS mount path
+#define FS_MOUNT_POINT              "/spiffs"         ///< LittleFS mount path
 #define MODEL_FILE_EXTENSION        ".frvd"           ///< Model file extension
 #define WAV_FILE_EXTENSION          ".wav"            ///< WAV file extension
 

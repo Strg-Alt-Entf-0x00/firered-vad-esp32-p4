@@ -11,7 +11,8 @@
 #include "esp_console.h"
 #include "nvs_flash.h"
 #include "esp_chip_info.h"
-#include "esp_spiffs.h"
+#include "esp_littlefs.h"
+#include "esp_pm.h"
 
 #include "esp_firevad.h"
 #include "esp_firevad_dsp.h"
@@ -41,35 +42,44 @@ static void print_banner(void) {
     printf("  - Metrics       : Latency and CPU profiling\n\n");
 }
 
-static esp_err_t mount_spiffs(void) {
-    ESP_LOGI(TAG, "Mounting SPIFFS partition");
-    esp_vfs_spiffs_conf_t conf = {
-        .base_path = SPIFFS_MOUNT_POINT,
-        .partition_label = "spiffs",
-        .max_files = 5,
-        .format_if_mount_failed = false
-    };
+static esp_err_t mount_littlefs(void) {
+    ESP_LOGI(TAG, "Mounting LittleFS partition");
+    esp_vfs_littlefs_conf_t conf = {};
+    conf.base_path = FS_MOUNT_POINT;
+    conf.partition_label = "spiffs";
+    conf.format_if_mount_failed = false;
+    conf.dont_mount = false;
     
-    esp_err_t ret = esp_vfs_spiffs_register(&conf);
+    esp_err_t ret = esp_vfs_littlefs_register(&conf);
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "SPIFFS not formatted. Formatting (takes ~30s)...");
+        ESP_LOGW(TAG, "LittleFS not formatted. Formatting (takes ~30s)...");
         conf.format_if_mount_failed = true;
-        ret = esp_vfs_spiffs_register(&conf);
+        ret = esp_vfs_littlefs_register(&conf);
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to initialize SPIFFS");
+            ESP_LOGE(TAG, "Failed to initialize LittleFS");
             return ret;
         }
     }
     
     size_t total = 0, used = 0;
-    esp_spiffs_info("spiffs", &total, &used);
-    ESP_LOGI(TAG, "SPIFFS: total=%zu KB, used=%zu KB", total / 1024, used / 1024);
+    esp_littlefs_info("spiffs", &total, &used);
+    ESP_LOGI(TAG, "LittleFS: total=%zu KB, used=%zu KB", total / 1024, used / 1024);
     
     return ESP_OK;
 }
 
 extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Starting FireVAD System");
+    
+#if CONFIG_PM_ENABLE
+    esp_pm_config_t pm_config = {
+        .max_freq_mhz = 360,
+        .min_freq_mhz = 40,
+        .light_sleep_enable = true
+    };
+    ESP_ERROR_CHECK(esp_pm_configure(&pm_config));
+    ESP_LOGI(TAG, "Power Management Configured (max 360MHz, light sleep enabled)");
+#endif
     
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -78,7 +88,7 @@ extern "C" void app_main(void) {
     }
     ESP_ERROR_CHECK(ret);
     
-    mount_spiffs();
+    mount_littlefs();
     esp_firevad_dsp_init();
     audio_manager_init();
     

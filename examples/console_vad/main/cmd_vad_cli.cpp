@@ -11,7 +11,10 @@
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "esp_spiffs.h"
+#include "freertos/task.h"
+#include "esp_littlefs.h"
+#include "esp_sleep.h"
+#include "esp_pm.h"
 
 #include "config.h"
 #include "audio_manager.h"
@@ -80,7 +83,7 @@ static int cmd_vad_model_info(int argc, char **argv) {
 
 static int cmd_vad_model_list(int argc, char **argv) {
     // Pass 1: find the longest filename
-    DIR* dir = opendir(SPIFFS_MOUNT_POINT);
+    DIR* dir = opendir(FS_MOUNT_POINT);
     if (!dir) return 1;
     int col_w = 8; // minimum width ("Filename")
     struct dirent* ent;
@@ -97,13 +100,13 @@ static int cmd_vad_model_list(int argc, char **argv) {
     for (int i = 0; i < col_w + 12; i++) printf("-");
     printf("\n");
 
-    dir = opendir(SPIFFS_MOUNT_POINT);
+    dir = opendir(FS_MOUNT_POINT);
     if (!dir) return 1;
     int count = 0;
     while ((ent = readdir(dir)) != NULL) {
         if (!strstr(ent->d_name, ".frvd")) continue;
         char path[MAX_FILE_PATH];
-        snprintf(path, sizeof(path), "%s/%s", SPIFFS_MOUNT_POINT, ent->d_name);
+        snprintf(path, sizeof(path), "%s/%s", FS_MOUNT_POINT, ent->d_name);
         FILE* f = fopen(path, "rb");
         if (!f) continue;
         fseek(f, 0, SEEK_END);
@@ -121,7 +124,7 @@ static int cmd_vad_model_list(int argc, char **argv) {
 static int cmd_vad_threshold(int argc, char **argv) {
     if (argc != 2) {
         printf("Usage: threshold <0.0-1.0>\nCurrent: %.2f\n", g_threshold);
-        return 1;
+        return (argc == 1) ? 0 : 1;
     }
     float val = atof(argv[1]);
     if (val < 0.0f || val > 1.0f) {
@@ -148,6 +151,10 @@ static int cmd_mic_gain(int argc, char **argv) {
         return 1;
     }
     if (strcmp(argv[1], "-s") == 0) {
+        if (argc == 2) {
+            printf("Software gain: %.2fx\n", g_sw_gain);
+            return 0;
+        }
         if (argc != 3) return 1;
         float val = atof(argv[2]);
         if (val < 0.1f || val > 10.0f) return 1;
@@ -223,7 +230,7 @@ static int cmd_record_mic(int argc, char **argv) {
     }
     
     char path[MAX_FILE_PATH];
-    snprintf(path, sizeof(path), "%s/%s", SPIFFS_MOUNT_POINT, filename);
+    snprintf(path, sizeof(path), "%s/%s", FS_MOUNT_POINT, filename);
     
     FILE* f = fopen(path, "wb");
     if (!f) {
@@ -289,7 +296,7 @@ static int cmd_play_wav(int argc, char **argv) {
     }
     
     char path[MAX_FILE_PATH];
-    snprintf(path, sizeof(path), "%s/%s", SPIFFS_MOUNT_POINT, filename);
+    snprintf(path, sizeof(path), "%s/%s", FS_MOUNT_POINT, filename);
     
     FILE* f = fopen(path, "rb");
     if (!f) {
@@ -427,7 +434,7 @@ static int cmd_vad_infer_mic(int argc, char **argv) {
 static int cmd_fs_wav_list(int argc, char **argv) {
     // Pass 1: find the longest filename
     int col_w = 8; // minimum width ("Filename")
-    DIR *dir = opendir(SPIFFS_MOUNT_POINT);
+    DIR *dir = opendir(FS_MOUNT_POINT);
     if (!dir) {
         printf("[ERROR] Failed to open directory\n");
         return 1;
@@ -446,13 +453,13 @@ static int cmd_fs_wav_list(int argc, char **argv) {
     for (int i = 0; i < col_w + 12; i++) printf("-");
     printf("\n");
 
-    dir = opendir(SPIFFS_MOUNT_POINT);
+    dir = opendir(FS_MOUNT_POINT);
     if (!dir) return 1;
     bool found = false;
     while ((entry = readdir(dir)) != NULL) {
         if (!strstr(entry->d_name, ".wav")) continue;
         char filepath[MAX_FILE_PATH];
-        snprintf(filepath, sizeof(filepath), "%s/%s", SPIFFS_MOUNT_POINT, entry->d_name);
+        snprintf(filepath, sizeof(filepath), "%s/%s", FS_MOUNT_POINT, entry->d_name);
         struct stat st;
         if (stat(filepath, &st) == 0) {
             printf("%-*s | %7ld KB\n", col_w, entry->d_name, st.st_size / 1024);
@@ -478,7 +485,7 @@ static int cmd_vad_infer_wav(int argc, char **argv) {
     }
     
     char path[MAX_FILE_PATH];
-    snprintf(path, sizeof(path), "%s/%s", SPIFFS_MOUNT_POINT, filename);
+    snprintf(path, sizeof(path), "%s/%s", FS_MOUNT_POINT, filename);
     
     FILE* f = fopen(path, "rb");
     if (!f) {
@@ -583,10 +590,93 @@ static int cmd_vad_pre_vad(int argc, char **argv) {
         printf("Usage: vad_pre_vad <multiplier>\n");
         printf("  0.0 = disable Pre-VAD\n");
         printf("  1.5 = trigger if energy > 1.5x baseline noise\n");
-        return 1;
+        printf("\nCurrent multiplier: %.2f\n", vad_runner_get_pre_vad_multiplier());
+        return (argc == 1) ? 0 : 1;
     }
     float multiplier = atof(argv[1]);
     vad_runner_set_pre_vad_threshold(multiplier);
+    return 0;
+}
+
+static int cmd_vad_sleep_mode(int argc, char **argv) {
+    if (!vad_runner_is_model_loaded()) {
+        printf("[ERROR] No model loaded.\n");
+        return 1;
+    }
+    
+    if (!audio_manager_is_initialized()) {
+        if (audio_manager_init() != ESP_OK) return 1;
+    }
+    
+    int sleep_ms = 500;
+    if (argc >= 2) sleep_ms = atoi(argv[1]);
+    
+    printf("\n=== Software Duty-Cycling VAD (Light Sleep) ===\n");
+    printf("Waking up every %d ms to check for speech.\n", sleep_ms);
+    printf("Note: Press Ctrl+T Ctrl+C to exit if console becomes unresponsive.\n");
+    
+    const size_t frame_size = 160;
+    int16_t pcm_frame[frame_size];
+
+    while (true) {
+        // Let the OS automatic power management handle light sleep
+        printf("z"); fflush(stdout);
+        vTaskDelay(pdMS_TO_TICKS(sleep_ms));
+        printf("w"); fflush(stdout);
+
+        // Reset RNN state: stream-VAD has internal memory that drifts during sleep gaps
+        vad_runner_reset();
+
+        audio_manager_start_capture();
+
+        // Flush stale I2S DMA data (5 frames = 50ms worth of old buffers)
+        for (int i = 0; i < 5; i++) {
+            audio_manager_read(pcm_frame, frame_size, 50);
+        }
+
+        // Capture 200ms (20 frames) for burst detection.
+        // Pre-VAD is designed for continuous streams; bypass it here for single-burst wakeup checks.
+        float max_prob = 0.0f;
+        float saved_multiplier = vad_runner_get_pre_vad_multiplier();
+        vad_runner_set_pre_vad_threshold_silent(0.0f); // Bypass Pre-VAD temporarily (silent)
+        for (int i = 0; i < 20; i++) {
+            int read = audio_manager_read(pcm_frame, frame_size, 100);
+            if (read == frame_size) {
+                float prob = vad_runner_infer_frame(pcm_frame);
+                if (prob > max_prob) max_prob = prob;
+            }
+        }
+        vad_runner_set_pre_vad_threshold_silent(saved_multiplier); // Restore Pre-VAD (silent)
+
+        if (max_prob >= g_threshold) {
+            printf("\n[SPEECH DETECTED!] Prob: %.2f\n", max_prob);
+
+            // Stay awake and track speech until 500ms of silence
+            int silence_frames = 0;
+            while (silence_frames < 50) {
+                int read = audio_manager_read(pcm_frame, frame_size, 100);
+                if (read == frame_size) {
+                    float prob = vad_runner_infer_frame(pcm_frame);
+                    if (prob < g_threshold) {
+                        silence_frames++;
+                    } else {
+                        silence_frames = 0;
+                    }
+                    if (silence_frames % 10 == 0) {
+                        printf("."); fflush(stdout);
+                    }
+                } else {
+                    break;
+                }
+            }
+            printf("\n[SILENCE] Going back to sleep.\n");
+            vad_runner_reset();
+        }
+
+        audio_manager_stop_capture();
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
     return 0;
 }
 
@@ -643,6 +733,10 @@ void cmd_vad_cli_register(void) {
     esp_console_cmd_t cmd_wav = {}; cmd_wav.command = "fs_wav_list"; cmd_wav.help = "List WAV files"; cmd_wav.func = &cmd_fs_wav_list;
     esp_console_cmd_t cmd_thr = {}; cmd_thr.command = "vad_threshold"; cmd_thr.help = "Set threshold"; cmd_thr.hint = "<0.0-1.0>"; cmd_thr.func = &cmd_vad_threshold;
     esp_console_cmd_t cmd_gn = {}; cmd_gn.command = "mic_gain"; cmd_gn.help = "Set mic gain (use -s for software, -h for hardware ES8311 PGA)"; cmd_gn.hint = "[-s <mult>] [-h <0-11>]"; cmd_gn.func = &cmd_mic_gain;
+    ESP_ERROR_CHECK(esp_console_cmd_register(&cmd_gn));
+    
+    esp_console_cmd_t cmd_sl = {}; cmd_sl.command = "vad_sleep_mode"; cmd_sl.help = "Enter Software Duty-Cycling VAD mode using Light Sleep"; cmd_sl.hint = "[<sleep_interval_ms>]"; cmd_sl.func = &cmd_vad_sleep_mode;
+    ESP_ERROR_CHECK(esp_console_cmd_register(&cmd_sl));
     esp_console_cmd_t cmd_sv = {}; cmd_sv.command = "speaker_vol"; cmd_sv.help = "Set speaker volume"; cmd_sv.hint = "<0-100>"; cmd_sv.func = &cmd_speaker_vol;
     esp_console_cmd_t cmd_met = {}; cmd_met.command = "vad_metrics"; cmd_met.help = "Show performance metrics"; cmd_met.func = &cmd_vad_metrics;
     esp_console_cmd_t cmd_rec = {}; cmd_rec.command = "record_mic"; cmd_rec.help = "Record mic to WAV"; cmd_rec.hint = "<filename.wav> <seconds>"; cmd_rec.func = &cmd_record_mic;

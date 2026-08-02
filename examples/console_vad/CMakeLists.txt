@@ -7,14 +7,14 @@ set(EXTRA_COMPONENT_DIRS "../../components")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(firered_vad_console)
 
-# Automatically create SPIFFS image from models if they exist
-set(SPIFFS_STAGING_DIR "${CMAKE_BINARY_DIR}/spiffs_staging")
+# Automatically create LittleFS image from models if they exist
+set(FS_STAGING_DIR "${CMAKE_BINARY_DIR}/fs_staging")
 
 if(EXISTS "${CMAKE_SOURCE_DIR}/converted_models" OR EXISTS "${CMAKE_SOURCE_DIR}/example_wave")
-    message(STATUS "Configuring SPIFFS image generation...")
+    message(STATUS "Configuring LittleFS image generation...")
     
     # Create staging directory at configure time
-    file(MAKE_DIRECTORY "${SPIFFS_STAGING_DIR}")
+    file(MAKE_DIRECTORY "${FS_STAGING_DIR}")
     
     # Collect source files for dependency tracking
     file(GLOB_RECURSE FRVD_FILES "${CMAKE_SOURCE_DIR}/converted_models/*.frvd")
@@ -28,18 +28,18 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/converted_models" OR EXISTS "${CMAKE_SOURCE_DIR}/
     
     # Create custom target to populate staging directory at BUILD time
     # This ensures files are always fresh, even if added after initial configure
-    add_custom_target(spiffs_staging_populate ALL
-        COMMAND ${CMAKE_COMMAND} -E remove_directory "${SPIFFS_STAGING_DIR}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${SPIFFS_STAGING_DIR}"
-        COMMENT "Preparing SPIFFS staging directory..."
+    add_custom_target(fs_staging_populate ALL
+        COMMAND ${CMAKE_COMMAND} -E remove_directory "${FS_STAGING_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${FS_STAGING_DIR}"
+        COMMENT "Preparing LittleFS staging directory..."
     )
     
     # Copy model files at build time
     if(FRVD_FILES)
         foreach(frvd_file ${FRVD_FILES})
             get_filename_component(filename ${frvd_file} NAME)
-            add_custom_command(TARGET spiffs_staging_populate POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${frvd_file}" "${SPIFFS_STAGING_DIR}/${filename}"
+            add_custom_command(TARGET fs_staging_populate POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${frvd_file}" "${FS_STAGING_DIR}/${filename}"
                 COMMENT "  Adding model: ${filename}"
             )
         endforeach()
@@ -49,20 +49,20 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/converted_models" OR EXISTS "${CMAKE_SOURCE_DIR}/
     if(WAV_FILES)
         foreach(wav_file ${WAV_FILES})
             get_filename_component(filename ${wav_file} NAME)
-            add_custom_command(TARGET spiffs_staging_populate POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${wav_file}" "${SPIFFS_STAGING_DIR}/${filename}"
+            add_custom_command(TARGET fs_staging_populate POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${wav_file}" "${FS_STAGING_DIR}/${filename}"
                 COMMENT "  Adding test WAV: ${filename}"
             )
         endforeach()
     endif()
     
-    # Re-enable this before publishing to ensure SPIFFS is generated and flashed!
-    spiffs_create_partition_image(spiffs "${SPIFFS_STAGING_DIR}" FLASH_IN_PROJECT DEPENDS spiffs_staging_populate)
+    # Re-enable this before publishing to ensure LittleFS is generated and flashed!
+    littlefs_create_partition_image(spiffs "${FS_STAGING_DIR}" FLASH_IN_PROJECT DEPENDS fs_staging_populate)
     
-    message(STATUS "SPIFFS image will be created at build time and flashed automatically")
+    message(STATUS "LittleFS image will be created at build time and flashed automatically")
     message(STATUS "Note: Files are copied fresh on every build to ensure consistency")
 else()
-    message(WARNING "No source files found for SPIFFS!")
+    message(WARNING "No source files found for LittleFS!")
     message(WARNING "  - Models directory: ${CMAKE_SOURCE_DIR}/converted_models")
     message(WARNING "  - WAV files directory: ${CMAKE_SOURCE_DIR}/example_wave")
     message(WARNING "Run 'python download_models.py' to download models")

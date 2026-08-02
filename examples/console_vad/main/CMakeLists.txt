@@ -5,7 +5,7 @@ idf_component_register(
         esp_firevad
         console
         nvs_flash
-        spiffs
+        joltwallet__littlefs
         espressif__esp_codec_dev  # For audio codec support
     PRIV_REQUIRES
         driver                    # Legacy driver component (transitional)
@@ -13,6 +13,8 @@ idf_component_register(
         esp_driver_i2c            # New I2C master driver (ESP-IDF v6.0+)
         esp_driver_i2s            # New I2S STD/PDM/TDM driver (ESP-IDF v6.0+)
         esp_timer
+        esp_pm
+        esp_ringbuf
 )
 
 # Audio support configuration notes:

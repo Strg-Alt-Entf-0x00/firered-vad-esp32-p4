@@ -37,7 +37,7 @@ bool vad_runner_is_causal(void) {
 
 int vad_runner_load_model(const char* filename) {
     char path[MAX_FILE_PATH];
-    snprintf(path, sizeof(path), "%s/%s", SPIFFS_MOUNT_POINT, filename);
+    snprintf(path, sizeof(path), "%s/%s", FS_MOUNT_POINT, filename);
     
     FILE* f = fopen(path, "rb");
     if (!f) {
@@ -190,6 +190,16 @@ void vad_runner_set_pre_vad_threshold(float multiplier) {
         ESP_LOGI(TAG, "Pre-VAD Disabled.");
     }
 }
+
+float vad_runner_get_pre_vad_multiplier(void) {
+    return g_pre_vad_multiplier;
+}
+
+// Silent version for internal use (e.g. sleep loop bypass - avoids log spam)
+void vad_runner_set_pre_vad_threshold_silent(float multiplier) {
+    g_pre_vad_multiplier = multiplier;
+}
+
 
 void vad_runner_extract_features(int16_t* pcm_samples, float* features, float* out_energy) {
     esp_firevad_dsp_extract_features(pcm_samples, features, out_energy);

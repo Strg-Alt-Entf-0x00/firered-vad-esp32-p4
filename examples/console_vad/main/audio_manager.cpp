@@ -12,7 +12,12 @@
 #include "config.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/ringbuf.h"
 #include <math.h>
+
+#define INMP441_BCLK_GPIO 20
+#define INMP441_WS_GPIO   21
+#define INMP441_DIN_GPIO  22
 
 static const char* TAG = "AUDIO_MANAGER";
 
@@ -21,12 +26,17 @@ static bool g_capture_running = false;
 static bool g_playback_running = false;
 static uint8_t g_current_mic_gain = CONFIG_FIREVAD_MIC_GAIN;
 
+#define TX_RINGBUF_SIZE  32000
+static RingbufHandle_t g_tx_ringbuf = NULL;
+static TaskHandle_t g_tx_task_handle = NULL;
+
 // I2C Master Bus Handle
 static i2c_master_bus_handle_t g_i2c_bus_handle = NULL;
 
 // I2S Handles
 static i2s_chan_handle_t g_i2s_rx_handle = NULL;
 static i2s_chan_handle_t g_i2s_tx_handle = NULL;
+static i2s_chan_handle_t g_i2s1_rx_handle = NULL;
 
 // Codec Interfaces
 static const audio_codec_ctrl_if_t *g_codec_ctrl_if = NULL;
@@ -85,8 +95,66 @@ static esp_err_t audio_i2s_init(void) {
     if (ret != ESP_OK) return ret;
     
     // Initialize TX channel
-    ret = i2s_channel_init_std_mode(g_i2s_tx_handle, &std_cfg);
+    ret = i2s_channel_init_std_mode(g_i2s_tx_handle, &std_cfg);    
     return ret;
+}
+
+static void audio_tx_task(void *pvParameters) {
+    while (1) {
+        size_t size = 0;
+        // Always drain the ringbuffer, regardless of g_playback_running,
+        // so stop_playback() can safely wait for the buffer to empty.
+        int16_t *data = (int16_t *)xRingbufferReceiveUpTo(g_tx_ringbuf, &size, portMAX_DELAY, 4000);
+        if (data) {
+            int samples = size / sizeof(int16_t);
+            int16_t* stereo_buf = (int16_t*)malloc(samples * 2 * sizeof(int16_t));
+            if (stereo_buf) {
+                for (int i = 0; i < samples; i++) {
+                    stereo_buf[i * 2] = data[i];
+                    stereo_buf[i * 2 + 1] = data[i];
+                }
+                size_t bytes_written = 0;
+                i2s_channel_write(g_i2s_tx_handle, stereo_buf, samples * 2 * sizeof(int16_t), &bytes_written, portMAX_DELAY);
+                free(stereo_buf);
+            }
+            vRingbufferReturnItem(g_tx_ringbuf, (void *)data);
+        }
+    }
+}
+
+static esp_err_t audio_i2s1_init(void) {
+    ESP_LOGI(TAG, "Initializing I2S1 for INMP441: BCLK=%d, WS=%d, DIN=%d",
+             INMP441_BCLK_GPIO, INMP441_WS_GPIO, INMP441_DIN_GPIO);
+
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
+    chan_cfg.auto_clear = true;
+    
+    esp_err_t ret = i2s_new_channel(&chan_cfg, NULL, &g_i2s1_rx_handle);
+    if (ret != ESP_OK) return ret;
+    
+    i2s_std_config_t std_cfg = {
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(CONFIG_FIREVAD_SAMPLE_RATE),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG((i2s_data_bit_width_t)CONFIG_FIREVAD_BITS_PER_SAMPLE, I2S_SLOT_MODE_STEREO),
+        .gpio_cfg = {
+            .mclk = I2S_GPIO_UNUSED,
+            .bclk = (gpio_num_t)INMP441_BCLK_GPIO,
+            .ws   = (gpio_num_t)INMP441_WS_GPIO,
+            .dout = I2S_GPIO_UNUSED,
+            .din  = (gpio_num_t)INMP441_DIN_GPIO,
+            .invert_flags = {
+                .mclk_inv = false,
+                .bclk_inv = false,
+                .ws_inv   = false,
+            },
+        },
+    };
+    
+    std_cfg.clk_cfg.clk_src = I2S_CLK_SRC_APLL; // High quality clock
+    
+    ret = i2s_channel_init_std_mode(g_i2s1_rx_handle, &std_cfg);
+    if (ret != ESP_OK) return ret;
+    
+    return i2s_channel_enable(g_i2s1_rx_handle);
 }
 
 static esp_err_t audio_codec_init(void) {
@@ -167,8 +235,19 @@ esp_err_t audio_manager_init(void) {
     ret = audio_i2s_init();
     if (ret != ESP_OK) return ret;
     
+    ret = audio_i2s1_init();
+    if (ret != ESP_OK) return ret;
+    
     ret = audio_codec_init();
     if (ret != ESP_OK) return ret;
+    
+    g_tx_ringbuf = xRingbufferCreate(32000, RINGBUF_TYPE_BYTEBUF);
+    if (!g_tx_ringbuf) {
+        ESP_LOGE(TAG, "Failed to create TX ringbuf");
+        return ESP_FAIL;
+    }
+    
+    xTaskCreatePinnedToCore(audio_tx_task, "audio_tx", 4096, NULL, 5, &g_tx_task_handle, 1);
     
     g_initialized = true;
     ESP_LOGI(TAG, "=== Audio Manager Initialized Successfully ===");
@@ -285,7 +364,7 @@ int audio_manager_read(int16_t* buffer, size_t samples, uint32_t timeout_ms) {
     size_t bytes_read = 0;
     size_t requested_bytes = samples * 2 * sizeof(int16_t);
     
-    esp_err_t ret = i2s_channel_read(g_i2s_rx_handle, stereo_buf, requested_bytes, &bytes_read, pdMS_TO_TICKS(timeout_ms));
+    esp_err_t ret = i2s_channel_read(g_i2s1_rx_handle, stereo_buf, requested_bytes, &bytes_read, pdMS_TO_TICKS(timeout_ms));
     
     if (ret != ESP_OK && ret != ESP_ERR_TIMEOUT) {
         ESP_LOGE(TAG, "I2S read error: %s", esp_err_to_name(ret));
@@ -324,12 +403,22 @@ esp_err_t audio_manager_start_playback(void) {
 esp_err_t audio_manager_stop_playback(void) {
     if (!g_playback_running) return ESP_OK;
     
+    // Wait for ringbuffer to drain (max 3 seconds) before stopping codec.
+    // This prevents the race condition where stop_playback is called before
+    // audio_tx_task has finished playing buffered audio.
+    uint32_t wait_ticks = 3000 / 10;
+    while (xRingbufferGetCurFreeSize(g_tx_ringbuf) < TX_RINGBUF_SIZE && wait_ticks > 0) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        wait_ticks--;
+    }
+    
+    g_playback_running = false;
+    
     // Don't disable codec if capture is running
     if (!g_capture_running) {
         g_codec_if->enable(g_codec_if, false);
     }
     
-    g_playback_running = false;
     ESP_LOGI(TAG, "Audio playback stopped");
     return ESP_OK;
 }
@@ -337,31 +426,14 @@ esp_err_t audio_manager_stop_playback(void) {
 int audio_manager_write(const int16_t* buffer, size_t samples, uint32_t timeout_ms) {
     if (!g_playback_running) return 0;
     
-    int16_t* stereo_buf = (int16_t*)malloc(samples * 2 * sizeof(int16_t));
-    if (!stereo_buf) {
-        ESP_LOGE(TAG, "Failed to allocate stereo write buffer");
+    size_t size = samples * sizeof(int16_t);
+    BaseType_t res = xRingbufferSend(g_tx_ringbuf, buffer, size, pdMS_TO_TICKS(timeout_ms));
+    if (res != pdTRUE) {
+        ESP_LOGE(TAG, "TX Ringbuffer full");
         return -1;
     }
     
-    // Duplicate mono samples to left and right channels
-    for (size_t i = 0; i < samples; i++) {
-        stereo_buf[i * 2] = buffer[i];
-        stereo_buf[i * 2 + 1] = buffer[i];
-    }
-    
-    size_t bytes_written = 0;
-    size_t requested_bytes = samples * 2 * sizeof(int16_t);
-    
-    esp_err_t ret = i2s_channel_write(g_i2s_tx_handle, stereo_buf, requested_bytes, &bytes_written, pdMS_TO_TICKS(timeout_ms));
-    
-    free(stereo_buf);
-    
-    if (ret != ESP_OK && ret != ESP_ERR_TIMEOUT) {
-        ESP_LOGE(TAG, "I2S write error: %s", esp_err_to_name(ret));
-        return -1;
-    }
-    
-    return (bytes_written / sizeof(int16_t)) / 2;
+    return samples;
 }
 
 void audio_manager_play_boot_sequence(void) {

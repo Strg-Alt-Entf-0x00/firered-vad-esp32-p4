@@ -69,6 +69,18 @@ void vad_runner_calibrate_noise_blocking(int seconds);
 void vad_runner_set_pre_vad_threshold(float multiplier);
 
 /**
+ * @brief Get the current Pre-VAD multiplier
+ * @return Current multiplier (0.0f if disabled)
+ */
+float vad_runner_get_pre_vad_multiplier(void);
+
+/**
+ * @brief Silent version of set_pre_vad_threshold (no log output)
+ * Use in tight loops to avoid log spam.
+ */
+void vad_runner_set_pre_vad_threshold_silent(float multiplier);
+
+/**
  * @brief Extract features from raw PCM samples
  * 
  * @param pcm_samples Array of 160 samples (10ms @ 16kHz)
