@@ -348,7 +348,7 @@ void FileProtocol::handle_device_info() {
     // Flash info
     info.flash_size = 32 * 1024 * 1024;  // 32MB
     
-    uint64_t flash_total = 32 * 1024 * 1024, flash_free = 0;
+    uint64_t flash_free = 0;
     info.flash_free = flash_free;
     // PSRAM info
     #if CONFIG_SPIRAM
