@@ -19,7 +19,7 @@
 #include "dsps_dotprod.h"  // Only for FP32 dense_dot_f32_esp_dsp()
 
 // NOTE: dsps_mul, dsps_add, dsps_sub were removed (Session 13)
-// Reason: Function call overhead caused INT8 regression (4.47ms → 6.49ms)
+// Reason: Function call overhead caused INT8 regression (4.47ms -> 6.49ms)
 // Solution: Use inline loops instead - compiler auto-vectorizes them!
 
 #ifndef TCM_BSS_ATTR

@@ -231,7 +231,7 @@ esp_err_t FilesystemManager::delete_file(const char* path) {
     }
     
     if (S_ISDIR(st.st_mode)) {
-        // ✅ FIX: Recursive delete for directories
+        // [FIX] Recursive delete for directories
         return delete_directory_recursive(path);
     } else {
         if (unlink(path) != 0) {

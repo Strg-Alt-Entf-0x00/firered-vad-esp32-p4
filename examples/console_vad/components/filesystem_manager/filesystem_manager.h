@@ -121,6 +121,6 @@ private:
     bool is_sd_path(const char* path);
     esp_err_t validate_path(const char* path);
     
-    // ✅ Recursive directory deletion helper
+    // [FIX] Recursive directory deletion helper
     esp_err_t delete_directory_recursive(const char* path);
 };

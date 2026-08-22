@@ -191,11 +191,11 @@ def run_benchmark():
             rt = metrics['rt_load']
             
             if rt <= 100.0:
-                verdict = "**Yes — Recommended**" if "INT8-CH" in name else "Yes"
-                row = f"| **`{name}`** | **{lat:,.0f} µs** | {cyc:,.0f} | **{rt:.1f}%** | {verdict} |\n"
+                verdict = "**Yes - Recommended**" if "INT8-CH" in name else "Yes"
+                row = f"| **`{name}`** | **{lat:,.0f} us** | {cyc:,.0f} | **{rt:.1f}%** | {verdict} |\n"
             else:
-                verdict = f"No — {rt/100.0:.1f}x over budget"
-                row = f"| `{name}` | {lat:,.0f} µs | {cyc:,.0f} | {rt:.1f}% | {verdict} |\n"
+                verdict = f"No - {rt/100.0:.1f}x over budget"
+                row = f"| `{name}` | {lat:,.0f} us | {cyc:,.0f} | {rt:.1f}% | {verdict} |\n"
                 
             f.write(row)
             

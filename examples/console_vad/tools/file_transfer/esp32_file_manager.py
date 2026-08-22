@@ -149,7 +149,7 @@ class ESP32FileManager:
         logger.info("\nCreating /sd/test_audio directory...")
         try:
             self.proto.mkdir('/sd/test_audio')
-            logger.info("✓ Directory created")
+            logger.info("[OK] Directory created")
         except ESP32ProtocolError as e:
             if "NACK" in str(e):
                 logger.info("Directory already exists")
@@ -175,10 +175,10 @@ class ESP32FileManager:
                     
                     logger.info(f"Uploading {filename} ({len(data):,} bytes)...")
                     self.proto.write_file(remote_path, data)
-                    logger.info(f"  ✓ Success")
+                    logger.info(f"  [OK] Success")
                     success_count += 1
                 except Exception as e:
-                    logger.error(f"  ✗ Failed: {e}")
+                    logger.error(f"  [FAIL] Failed: {e}")
                     fail_count += 1
         
         # Upload test audio/txt files to /sd/test_audio
@@ -197,11 +197,11 @@ class ESP32FileManager:
                     
                     logger.info(f"Uploading {filename} ({len(data):,} bytes)...")
                     self.proto.write_file(remote_path, data)
-                    logger.info(f"  ✓ Success")
+                    logger.info(f"  [OK] Success")
                     success_count += 1
                 
                 except Exception as e:
-                    logger.error(f"  ✗ Failed: {e}")
+                    logger.error(f"  [FAIL] Failed: {e}")
                     fail_count += 1
         
         # Upload model files
@@ -219,23 +219,23 @@ class ESP32FileManager:
                 
                 logger.info(f"Uploading {filename} ({len(data):,} bytes)...")
                 self.proto.write_file(remote_path, data)
-                logger.info(f"  ✓ Success")
+                logger.info(f"  [OK] Success")
                 success_count += 1
                 
             except Exception as e:
-                logger.error(f"  ✗ Failed: {e}")
+                logger.error(f"  [FAIL] Failed: {e}")
                 fail_count += 1
         
         # Summary
         logger.info("\n" + "="*60)
         logger.info("UPLOAD SUMMARY")
         logger.info("="*60)
-        logger.info(f"✓ Successful: {success_count}")
-        logger.info(f"✗ Failed: {fail_count}")
+        logger.info(f"[OK] Successful: {success_count}")
+        logger.info(f"[FAIL] Failed: {fail_count}")
         logger.info(f"Total: {success_count + fail_count}")
         
         if fail_count == 0:
-            logger.info("\n🎉 All files uploaded successfully!")
+            logger.info("\n[OK] All files uploaded successfully!")
             
             # Auto-verify if requested
             if verify:
@@ -246,7 +246,7 @@ class ESP32FileManager:
             
             return True
         else:
-            logger.warning(f"\n⚠️  {fail_count} files failed to upload")
+            logger.warning(f"\n[WARN]  {fail_count} files failed to upload")
             return False
     
     def verify_upload(self):
@@ -275,7 +275,7 @@ class ESP32FileManager:
             logger.info("\nChecking critical files:")
             for exp in expected:
                 found = any(e.name == exp for e in entries)
-                status = "✓" if found else "✗"
+                status = "[OK]" if found else "[FAIL]"
                 logger.info(f"  {status} {exp}")
             
         except Exception as e:
@@ -295,9 +295,9 @@ class ESP32FileManager:
             for exp in expected_models:
                 found_entry = next((e for e in entries if e.name == exp), None)
                 if found_entry:
-                    logger.info(f"  ✓ {exp} - {found_entry.size:,} bytes")
+                    logger.info(f"  [OK] {exp} - {found_entry.size:,} bytes")
                 else:
-                    logger.error(f"  ✗ {exp} - NOT FOUND")
+                    logger.error(f"  [FAIL] {exp} - NOT FOUND")
                     return False
             
         except Exception as e:
@@ -309,14 +309,14 @@ class ESP32FileManager:
         test_file = '/sd/test_audio/test_hello_male_en_transcription.txt'
         try:
             content = self.proto.read_file(test_file)
-            logger.info(f"  ✓ Read {len(content)} bytes")
+            logger.info(f"  [OK] Read {len(content)} bytes")
             logger.info(f"  Content: {content.decode('utf-8', errors='replace')}")
         except Exception as e:
-            logger.error(f"  ✗ Failed: {e}")
+            logger.error(f"  [FAIL] Failed: {e}")
             return False
         
         logger.info("\n" + "="*60)
-        logger.info("✓ VERIFICATION PASSED")
+        logger.info("[OK] VERIFICATION PASSED")
         logger.info("="*60)
         return True
     
@@ -360,20 +360,20 @@ class ESP32FileManager:
                 logger.info(f"  Remote CRC32: 0x{remote_crc:08X}")
                 
                 if local_crc == remote_crc:
-                    logger.info(f"  ✓ CRC32 MATCH - File intact!")
+                    logger.info(f"  [OK] CRC32 MATCH - File intact!")
                 else:
-                    logger.error(f"  ✗ CRC32 MISMATCH!")
+                    logger.error(f"  [FAIL] CRC32 MISMATCH!")
                     all_valid = False
                     
             except Exception as e:
-                logger.error(f"  ✗ Error: {e}")
+                logger.error(f"  [FAIL] Error: {e}")
                 all_valid = False
         
         logger.info("\n" + "="*60)
         if all_valid:
-            logger.info("✓ ALL MODELS VERIFIED - Ready for inference!")
+            logger.info("[OK] ALL MODELS VERIFIED - Ready for inference!")
         else:
-            logger.error("✗ MODEL INTEGRITY CHECK FAILED - Re-upload recommended")
+            logger.error("[FAIL] MODEL INTEGRITY CHECK FAILED - Re-upload recommended")
         logger.info("="*60)
         
         return all_valid
@@ -390,11 +390,11 @@ class ESP32FileManager:
             with open(local_path, 'wb') as f:
                 f.write(data)
             
-            logger.info(f"✓ Downloaded {len(data):,} bytes to {local_path}")
+            logger.info(f"[OK] Downloaded {len(data):,} bytes to {local_path}")
             return True
             
         except Exception as e:
-            logger.error(f"✗ Failed: {e}")
+            logger.error(f"[FAIL] Failed: {e}")
             return False
     
     def delete_file(self, remote_path):
@@ -402,10 +402,10 @@ class ESP32FileManager:
         logger.info(f"Deleting {remote_path}...")
         try:
             self.proto.delete_file(remote_path)
-            logger.info(f"✓ Deleted")
+            logger.info(f"[OK] Deleted")
             return True
         except Exception as e:
-            logger.error(f"✗ Failed: {e}")
+            logger.error(f"[FAIL] Failed: {e}")
             return False
 
 

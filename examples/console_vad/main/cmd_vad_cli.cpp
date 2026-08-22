@@ -737,18 +737,25 @@ static int cmd_benchmark(int argc, char **argv) {
     }
     
     vad_runner_reset();
+    benchmark_init();
     benchmark_reset();
     
-    int64_t start_time = esp_timer_get_time();
+    int64_t total_us = 0;
     
     for (int i = 0; i < num_frames; i++) {
+        int64_t t0 = esp_timer_get_time();
         uint32_t b_id = benchmark_start("Infer Frame");
         vad_runner_infer_frame(dummy_frame);
         benchmark_end(b_id);
+        int64_t t1 = esp_timer_get_time();
+        
+        total_us += (t1 - t0);
+        
+        // Prevent Task Watchdog starvation
+        if (i > 0 && (i % 10 == 0)) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
     }
-    
-    int64_t end_time = esp_timer_get_time();
-    int64_t total_us = end_time - start_time;
     
     printf("\n--- Results ---\n");
     printf("Total Time: %lld us\n", total_us);

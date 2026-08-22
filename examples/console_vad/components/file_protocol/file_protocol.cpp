@@ -573,7 +573,7 @@ void FileProtocol::handle_get_file_begin(const uint8_t* payload, uint16_t length
     // Send end marker
     send_frame(CMD_GET_FILE_END, nullptr, 0);
     
-    // ✅ CRITICAL FIX: Clear transfer state after download completes!
+    // [FIX] CRITICAL FIX: Clear transfer state after download completes!
     m_transfer_active = false;
     m_transfer_bytes = 0;
     m_transfer_total = 0;
@@ -765,7 +765,7 @@ void FileProtocol::handle_put_file_abort() {
 // ============================================================================
 
 void FileProtocol::handle_delete(const uint8_t* payload, uint16_t length) {
-    // ✅ FIX: Check if transfer is active
+    // [FIX] Check if transfer is active
     if (m_transfer_active) {
         ESP_LOGW(TAG, "Cannot delete: transfer active");
         send_error(ERR_TRANSFER_ACTIVE);
@@ -790,7 +790,7 @@ void FileProtocol::handle_delete(const uint8_t* payload, uint16_t length) {
 }
 
 void FileProtocol::handle_rename(const uint8_t* payload, uint16_t length) {
-    // ✅ FIX: Check if transfer is active
+    // [FIX] Check if transfer is active
     if (m_transfer_active) {
         ESP_LOGW(TAG, "Cannot rename: transfer active");
         send_error(ERR_TRANSFER_ACTIVE);
@@ -825,7 +825,7 @@ void FileProtocol::handle_rename(const uint8_t* payload, uint16_t length) {
 }
 
 void FileProtocol::handle_mkdir(const uint8_t* payload, uint16_t length) {
-    // ✅ FIX: Check if transfer is active
+    // [FIX] Check if transfer is active
     if (m_transfer_active) {
         ESP_LOGW(TAG, "Cannot mkdir: transfer active");
         send_error(ERR_TRANSFER_ACTIVE);

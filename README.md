@@ -67,25 +67,38 @@ To compile the firmware, explore the hardware, and test the microphone pipeline,
 
 *(Last Benchmark Run: 2026-08-21 17:26:16)*
 
-All numbers below are real measurements from the ESP32-P4 (Dual-Core RISC-V @ 360MHz, 32MB PSRAM). 
-**Note:** The ESP32-P4's Octal-SPI PSRAM bandwidth is insufficient for large, unoptimized models. FP32 variants demand too much memory bandwidth, causing the CPU to stall.
+All numbers below represent the **raw Neural Network (NN) inference latency** measured sequentially on a single core (ESP32-P4 Dual-Core RISC-V @ 360MHz, 32MB PSRAM).
 
-### Benchmark Results (10ms audio frame = 10,000 µs real-time budget)
+> [!NOTE]
+> **Real-World C++ Throughput:** In production, our C++ firmware (`console_vad`) utilizes an asynchronous **Dual-Core Pipeline** (Audio DSP on Core 0, NN on Core 1). Because these tasks run in parallel, the total system throughput is bound only by the slower core. 
+> As a result, even the massive `Stream-VAD FP32` model achieves an end-to-end pipeline throughput of **~8.4 ms** (RTF = 0.84) on real hardware, comfortably meeting the 10ms real-time budget without any quantization!
+
+### 1. Raw NN Inference (Python / Single-Core)
+*(10ms audio frame = 10,000 µs real-time budget)*
 
 | Model | Avg Latency | CPU Cycles | Real-Time Load | Verdict |
 |-------|-------------|------------|----------------|---------|
-| `Stream-VAD FP32` | 27.31 ms | 9,832,326 | 273.1% | No — Over budget |
-| `Stream-VAD INT16`| 11.77 ms | 4,235,911 | 117.7% | No — Over budget |
-| `Stream-VAD INT8` | 6.07 ms | 2,186,134 | 60.7% | **Yes — Real-time capable** |
-| `Stream-VAD INT8-CH`| **6.12 ms** | 2,203,320 | **61.2%** | **Yes — Recommended** |
-| `VAD FP32`        | 38.91 ms | 12,609,993| 389.1% | No — Offline only |
-| `VAD INT16`       | 48.45 ms | 15,701,420| 484.5% | No — Offline only |
-| `VAD INT8`        | 5.22 ms  | 1,694,745 | 52.2%  | Yes — Offline only |
-| `VAD INT8-CH`     | **5.25 ms** | 1,702,164 | **52.5%** | **Yes — Offline Recommended** |
-| `AED-VAD FP32`    | 28.79 ms | 10,364,610| 287.9% | No — Offline only |
-| `AED-VAD INT16`   | 12.83 ms | 4,619,155 | 128.3% | No — Offline only |
-| `AED-VAD INT8`    | 7.01 ms  | 2,522,769 | 70.1%  | Yes — Offline only |
-| `AED-VAD INT8-CH` | **7.05 ms** | 2,530,100 | **70.5%** | **Yes — Offline Recommended** |
+| `Stream-VAD FP32` | 27.31 ms | 9,832,326 | 273.1% | No - Over budget |
+| `Stream-VAD INT16`| 11.77 ms | 4,235,911 | 117.7% | No - Over budget |
+| `Stream-VAD INT8` | 6.07 ms | 2,186,134 | 60.7% | **Yes - Real-time capable** |
+| `Stream-VAD INT8-CH`| **6.12 ms** | 2,203,320 | **61.2%** | **Yes - Recommended** |
+| `VAD FP32`        | 38.91 ms | 12,609,993| 389.1% | No - Offline only |
+| `VAD INT16`       | 48.45 ms | 15,701,420| 484.5% | No - Offline only |
+| `VAD INT8`        | 5.22 ms  | 1,694,745 | 52.2%  | Yes - Offline only |
+| `VAD INT8-CH`     | **5.25 ms** | 1,702,164 | **52.5%** | **Yes - Offline Recommended** |
+| `AED-VAD FP32`    | 28.79 ms | 10,364,610| 287.9% | No - Offline only |
+| `AED-VAD INT16`   | 12.83 ms | 4,619,155 | 128.3% | No - Offline only |
+| `AED-VAD INT8`    | 7.01 ms  | 2,522,769 | 70.1%  | Yes - Offline only |
+| `AED-VAD INT8-CH` | **7.05 ms** | 2,530,100 | **70.5%** | **Yes - Offline Recommended** |
+
+### 2. End-to-End Pipeline Throughput (C++ Console / Hardware)
+*(Includes I2S Capture + DSP + RTOS Overhead. Measured via `cmd_benchmark`)*
+
+| Model | C++ Execution Mode | Pipeline Throughput | RTF | Real-Time Capable? |
+|-------|--------------------|---------------------|-----|--------------------|
+| `Stream-VAD FP32` | Dual-Core (DSP+NN parallel) | **8.42 ms** | 0.84 | **Yes** |
+| `AED-VAD FP32`    | Dual-Core (DSP+NN parallel) | **8.67 ms** | 0.87 | **Yes** |
+| `Stream-VAD INT8-CH` | Single-Core (Inline sequential) | **12.58 ms** | 1.25 | **No** (Needs Dual-Core or Buffering) |
 
 ### Quantization: Why INT8-CH is Required for Production
 

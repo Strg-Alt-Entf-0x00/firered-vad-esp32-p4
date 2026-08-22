@@ -63,32 +63,32 @@ def run_speed_test(port=None, baud=None, test_sizes=[100*1024, 500*1024, 1024*10
     proto = ESP32Protocol()
     
     # Connect
-    print("🔌 Connecting to ESP32-P4...")
+    print("[INFO] Connecting to ESP32-P4...")
     if not proto.connect(port, baud):
-        print("❌ Failed to connect!")
+        print("[FAIL] Failed to connect!")
         return False
     
-    print("✅ Connected!\n")
+    print("[OK] Connected!\n")
     
     # Get device info
     try:
         info = proto.get_device_info()
-        print(f"📱 Device: {info.device_name}")
-        print(f"📦 Max Payload: {info.max_payload_size:,} bytes")
-        print(f"📊 Optimal Chunk: {info.optimal_chunk_size:,} bytes")
+        print(f"[INFO] Device: {info.device_name}")
+        print(f"[INFO] Max Payload: {info.max_payload_size:,} bytes")
+        print(f"[INFO] Optimal Chunk: {info.optimal_chunk_size:,} bytes")
         
         if info.sd_present:
             sd_size_mb = info.sd_size / (1024 * 1024)
             sd_free_mb = info.sd_free / (1024 * 1024)
-            print(f"💾 SD Card: {sd_size_mb:.0f} MB total, {sd_free_mb:.0f} MB free")
+            print(f"[INFO] SD Card: {sd_size_mb:.0f} MB total, {sd_free_mb:.0f} MB free")
         else:
-            print("⚠️  Warning: No SD card detected!")
+            print("[WARN]  Warning: No SD card detected!")
             proto.disconnect()
             return False
         
         print()
     except Exception as e:
-        print(f"❌ Failed to get device info: {e}")
+        print(f"[FAIL] Failed to get device info: {e}")
         proto.disconnect()
         return False
     
@@ -98,18 +98,18 @@ def run_speed_test(port=None, baud=None, test_sizes=[100*1024, 500*1024, 1024*10
     for test_size in test_sizes:
         size_kb = test_size / 1024
         print(f"\n{'='*70}")
-        print(f"📁 Testing with {size_kb:.0f} KB file")
+        print(f"[INFO] Testing with {size_kb:.0f} KB file")
         print(f"{'='*70}\n")
         
         # Create test file
-        print(f"🔨 Creating {size_kb:.0f} KB test file...")
+        print(f"[INFO] Creating {size_kb:.0f} KB test file...")
         test_file = create_test_file(test_size)
         local_path = test_file
         remote_path = f"/sd/speedtest_{int(size_kb)}kb.bin"
         
         try:
             # UPLOAD TEST
-            print(f"\n⬆️  UPLOAD TEST ({size_kb:.0f} KB)")
+            print(f"\n[UP]  UPLOAD TEST ({size_kb:.0f} KB)")
             print("-" * 50)
             
             with open(local_path, 'rb') as f:
@@ -121,23 +121,23 @@ def run_speed_test(port=None, baud=None, test_sizes=[100*1024, 500*1024, 1024*10
                 upload_time = time.time() - start_time
                 success = True
             except Exception as e:
-                print(f"❌ Upload exception: {e}")
+                print(f"[FAIL] Upload exception: {e}")
                 upload_time = 0
                 success = False
             
             if success:
                 upload_speed = test_size / upload_time
-                print(f"✅ Upload complete!")
+                print(f"[OK] Upload complete!")
                 print(f"   Time: {upload_time:.2f} seconds")
                 print(f"   Speed: {format_speed(upload_speed)}")
                 print(f"   Efficiency: {(upload_speed / (baud / 10)) * 100:.1f}%")
             else:
-                print(f"❌ Upload failed!")
+                print(f"[FAIL] Upload failed!")
                 upload_speed = 0
                 upload_time = 0
             
             # DOWNLOAD TEST
-            print(f"\n⬇️  DOWNLOAD TEST ({size_kb:.0f} KB)")
+            print(f"\n[DOWN]  DOWNLOAD TEST ({size_kb:.0f} KB)")
             print("-" * 50)
             
             start_time = time.time()
@@ -146,25 +146,25 @@ def run_speed_test(port=None, baud=None, test_sizes=[100*1024, 500*1024, 1024*10
                 download_time = time.time() - start_time
                 success = True
             except Exception as e:
-                print(f"❌ Download exception: {e}")
+                print(f"[FAIL] Download exception: {e}")
                 download_time = 0
                 success = False
                 downloaded_data = b''
             
             if success:
                 download_speed = test_size / download_time
-                print(f"✅ Download complete!")
+                print(f"[OK] Download complete!")
                 print(f"   Time: {download_time:.2f} seconds")
                 print(f"   Speed: {format_speed(download_speed)}")
                 print(f"   Efficiency: {(download_speed / (baud / 10)) * 100:.1f}%")
                 
                 # Verify file integrity
                 if file_data == downloaded_data:
-                    print(f"   Integrity: ✅ VERIFIED")
+                    print(f"   Integrity: [OK] VERIFIED")
                 else:
-                    print(f"   Integrity: ❌ MISMATCH!")
+                    print(f"   Integrity: [FAIL] MISMATCH!")
             else:
-                print(f"❌ Download failed!")
+                print(f"[FAIL] Download failed!")
                 download_speed = 0
                 download_time = 0
             
@@ -181,7 +181,7 @@ def run_speed_test(port=None, baud=None, test_sizes=[100*1024, 500*1024, 1024*10
             })
             
         except Exception as e:
-            print(f"❌ Test failed: {e}")
+            print(f"[FAIL] Test failed: {e}")
         finally:
             # Clean up local file
             if os.path.exists(test_file):
@@ -189,12 +189,12 @@ def run_speed_test(port=None, baud=None, test_sizes=[100*1024, 500*1024, 1024*10
     
     # Summary
     print("\n" + "="*70)
-    print("📊 SUMMARY")
+    print("[INFO] SUMMARY")
     print("="*70)
     
     theoretical_max = baud / 10  # bits/sec -> bytes/sec
     
-    print(f"\n📐 Theoretical Maximum: {format_speed(theoretical_max)} @ {baud:,} baud")
+    print(f"\n Theoretical Maximum: {format_speed(theoretical_max)} @ {baud:,} baud")
     print()
     
     print("Size       Upload Speed    Efficiency    Download Speed  Efficiency")
@@ -220,29 +220,29 @@ def run_speed_test(port=None, baud=None, test_sizes=[100*1024, 500*1024, 1024*10
               f"{format_speed(avg_download):>12}    {avg_dn_eff:5.1f}%")
         
         print("\n" + "="*70)
-        print("🎯 PERFORMANCE VERDICT")
+        print("[INFO] PERFORMANCE VERDICT")
         print("="*70)
         
         if avg_dn_eff >= 95:
-            print("✅ EXCELLENT: Download efficiency ≥95% - Near theoretical maximum!")
+            print("[OK] EXCELLENT: Download efficiency 95% - Near theoretical maximum!")
         elif avg_dn_eff >= 85:
-            print("✅ VERY GOOD: Download efficiency ≥85% - Excellent performance!")
+            print("[OK] VERY GOOD: Download efficiency 85% - Excellent performance!")
         elif avg_dn_eff >= 70:
-            print("⚠️  GOOD: Download efficiency ≥70% - Acceptable but could improve")
+            print("[WARN]  GOOD: Download efficiency 70% - Acceptable but could improve")
         else:
-            print("❌ POOR: Download efficiency <70% - Optimization needed!")
+            print("[FAIL] POOR: Download efficiency <70% - Optimization needed!")
         
         if avg_up_eff >= 75:
-            print("✅ EXCELLENT: Upload efficiency ≥75% - Very good for SD writes!")
+            print("[OK] EXCELLENT: Upload efficiency 75% - Very good for SD writes!")
         elif avg_up_eff >= 65:
-            print("✅ GOOD: Upload efficiency ≥65% - Good for SD card writes")
+            print("[OK] GOOD: Upload efficiency 65% - Good for SD card writes")
         else:
-            print("⚠️  LOW: Upload efficiency <65% - SD card may be slow")
+            print("[WARN]  LOW: Upload efficiency <65% - SD card may be slow")
         
         print("="*70)
     
     proto.disconnect()
-    print("\n✅ Speed test complete!\n")
+    print("\n[OK] Speed test complete!\n")
     return True
 
 
@@ -261,10 +261,10 @@ def main():
     try:
         run_speed_test(port=args.port, baud=args.baud, test_sizes=test_sizes)
     except KeyboardInterrupt:
-        print("\n\n⚠️  Test interrupted by user")
+        print("\n\n[WARN]  Test interrupted by user")
         sys.exit(1)
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\n[FAIL] Error: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)

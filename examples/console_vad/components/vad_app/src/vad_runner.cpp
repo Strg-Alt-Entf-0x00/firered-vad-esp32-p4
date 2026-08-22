@@ -389,7 +389,7 @@ float IRAM_ATTR vad_runner_infer_frame(int16_t* pcm_frame) {
         // DUAL-CORE PATH: Start dual-core on first frame (for FP32/INT16 or Cascade)
         if (dual_core_vad_start(&g_dual_core_vad) == ESP_OK) {
             g_dual_core_active = true;
-            ESP_LOGI(TAG, "🚀 DUAL-CORE MODE ACTIVATED!");
+            ESP_LOGI(TAG, "[OK] DUAL-CORE MODE ACTIVATED!");
         }
     }
     
