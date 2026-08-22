@@ -41,6 +41,9 @@ extern "C" {
 #define FRAMES_PER_CHUNK_OFFLINE    100    ///< 1 second chunks for offline VAD
 #define SAMPLES_PER_CHUNK_OFFLINE   (FRAMES_PER_CHUNK_OFFLINE * FRAME_SIZE_SAMPLES)
 
+#define FIREVAD_CHUNK_SAMPLES_100MS (FRAME_SIZE_SAMPLES * 10) ///< 100ms chunk (1600 samples)
+#define FIREVAD_I2S_READ_TIMEOUT_MS 1000  ///< 1 second timeout for I2S reads
+
 // ============================================================================
 // Default Settings
 // ============================================================================
@@ -58,7 +61,7 @@ extern "C" {
 // File System Configuration
 // ============================================================================
 
-#define FS_MOUNT_POINT              "/spiffs"         ///< LittleFS mount path
+#define FS_MOUNT_POINT              "/sd"             ///< SD Card mount path
 #define MODEL_FILE_EXTENSION        ".frvd"           ///< Model file extension
 #define WAV_FILE_EXTENSION          ".wav"            ///< WAV file extension
 

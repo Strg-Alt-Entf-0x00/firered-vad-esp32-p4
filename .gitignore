@@ -1,17 +1,21 @@
-﻿# ESP-IDF Build
+# ESP-IDF Build
 build/
 sdkconfig
 sdkconfig.old
-dependencies.lock
-managed_components/
-# SPIFFS auto-generated
-spiffs_image.bin
-spiffs_data/
-build/spiffs_staging/
 # Models (download from HuggingFace)
-examples/*/converted_models/
-tools/original_models/
-tools/converted_models/
+examples/*/frvd_models/
+pth_models/
+# ESP-IDF managed components (auto-downloaded via idf_component.yml)
+examples/*/managed_components/
+# Local backup archives
+tools/backup/backups/
+# Private audio recordings & golden test data dumps
+tools/audio_analysis/mic_data/
+tools/golden_test/esp32_dumps/
+tools/golden_test/golden_dumps/
+tools/golden_test/FireRedVAD_Repo/
+tools/golden_test/*.png
+tools/golden_test/*.raw
 # Python
 __pycache__/
 *.pyc
@@ -27,10 +31,6 @@ venv/
 *.pem
 credentials.json
 secrets.json
-# Hidden files and folders (all folders starting with .)
-# Specific exceptions (if needed - uncomment)
-# !.github/
-# !.vscode/settings.json
 # IDE specific files
 *.code-workspace
 *.swp
@@ -39,10 +39,8 @@ compile_commands.json
 # OS
 Thumbs.db
 # Backups
-tools/backup/backups/*.zip
 *.backup
 *.bak
-original_models/
+# Local dev folders
 .vscode/
-.docs/
 .clangd

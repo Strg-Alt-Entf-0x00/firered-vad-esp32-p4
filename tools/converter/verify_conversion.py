@@ -130,7 +130,15 @@ def build_pytorch_model_from_frvd(arch, tensors):
     new_sd = {}
     for i, key in enumerate(keys_ordered):
         shape = sd[key].shape
-        new_sd[key] = torch.from_numpy(tensors[i].reshape(shape)).float()
+        tensor = tensors[i]
+        if "lookback_filter" in key or "lookahead_filter" in key:
+            # export_weights.py stores FSMN filters as [N, P] with reversed time.
+            # Restore PyTorch's [P, 1, N] layout before loading the state dict.
+            tensor = tensor.reshape(shape[2], shape[0]).T[:, ::-1].copy()
+            tensor = tensor.reshape(shape[0], 1, shape[2])
+        else:
+            tensor = tensor.reshape(shape)
+        new_sd[key] = torch.from_numpy(tensor).float()
 
     # Load only the keys we have, keep defaults for others (dropout etc)
     model.load_state_dict(new_sd, strict=False)
@@ -151,7 +159,8 @@ def run_streaming_inference(model, features_list, cmvn_means=None, cmvn_istd=Non
 
             feat_tensor = torch.from_numpy(f).float().unsqueeze(0).unsqueeze(0)
             probs, caches = model(feat_tensor, caches=caches)
-            results.append(probs.squeeze().item())
+            values = probs.squeeze().cpu().numpy()
+            results.append(float(values) if values.ndim == 0 else values.copy())
 
     return results
 
@@ -222,13 +231,13 @@ def main():
     max_diff = 0.0
     num_pass = 0
     for i in range(len(features_list)):
-        diff = abs(frvd_results[i] - orig_results[i])
+        diff = float(np.max(np.abs(np.asarray(frvd_results[i]) - np.asarray(orig_results[i]))))
         max_diff = max(max_diff, diff)
         status = "OK" if diff < 1e-5 else "WARN" if diff < 1e-3 else "FAIL"
         if status == "OK":
             num_pass += 1
         if i < 10 or i % 10 == 0 or status != "OK":
-            print(f"{i:6d} | {frvd_results[i]:10.6f} | {orig_results[i]:10.6f} | {diff:12.8f} | {status:>6}")
+            print(f"{i:6d} | {np.asarray(frvd_results[i])} | {np.asarray(orig_results[i])} | {diff:12.8f} | {status:>6}")
 
     print(f"\n{'='*60}")
     print(f"Results: {num_pass}/{len(features_list)} passed (max_diff={max_diff:.10f})")

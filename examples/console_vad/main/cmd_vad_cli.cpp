@@ -12,7 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/task.h"
-#include "esp_littlefs.h"
+
 #include "esp_sleep.h"
 #include "esp_pm.h"
 
@@ -20,6 +20,8 @@
 #include "audio_manager.h"
 #include "vad_runner.h"
 #include "metrics.h"
+#include "benchmark.h"
+#include "esp_timer.h"
 
 
 
@@ -81,43 +83,54 @@ static int cmd_vad_model_info(int argc, char **argv) {
     return 0;
 }
 
-static int cmd_vad_model_list(int argc, char **argv) {
-    // Pass 1: find the longest filename
-    DIR* dir = opendir(FS_MOUNT_POINT);
-    if (!dir) return 1;
-    int col_w = 8; // minimum width ("Filename")
+static void list_directory(const char* base_path, int level) {
+    if (level > 4) return; // Limit recursion depth
+    
+    DIR* dir = opendir(base_path);
+    if (!dir) {
+        if (level == 0) printf("Failed to open directory: %s\n", base_path);
+        return;
+    }
+
     struct dirent* ent;
     while ((ent = readdir(dir)) != NULL) {
-        if (!strstr(ent->d_name, ".frvd")) continue;
-        int len = strlen(ent->d_name);
-        if (len > col_w) col_w = len;
-    }
-    closedir(dir);
-    col_w += 2; // 2-char padding
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
 
-    // Pass 2: print table with exact column width
-    printf("\n%-*s | %s\n", col_w, "Filename", "Size");
-    for (int i = 0; i < col_w + 12; i++) printf("-");
-    printf("\n");
+        for (int i = 0; i < level; i++) printf("|   ");
+        printf("|-- %s", ent->d_name);
 
-    dir = opendir(FS_MOUNT_POINT);
-    if (!dir) return 1;
-    int count = 0;
-    while ((ent = readdir(dir)) != NULL) {
-        if (!strstr(ent->d_name, ".frvd")) continue;
         char path[MAX_FILE_PATH];
-        snprintf(path, sizeof(path), "%s/%s", FS_MOUNT_POINT, ent->d_name);
-        FILE* f = fopen(path, "rb");
-        if (!f) continue;
-        fseek(f, 0, SEEK_END);
-        size_t size = ftell(f);
-        fclose(f);
-        printf("%-*s | %7zu KB\n", col_w, ent->d_name, size / 1024);
-        count++;
+        snprintf(path, sizeof(path), "%s/%s", base_path, ent->d_name);
+
+        struct stat st;
+        if (stat(path, &st) == 0) {
+            if (S_ISDIR(st.st_mode)) {
+                printf("/\n");
+                list_directory(path, level + 1);
+            } else {
+                if (st.st_size > 1024 * 1024) {
+                    printf(" (%.1f MB)\n", (float)st.st_size / (1024.0f * 1024.0f));
+                } else if (st.st_size > 1024) {
+                    printf(" (%ld KB)\n", st.st_size / 1024);
+                } else {
+                    printf(" (%ld B)\n", st.st_size);
+                }
+            }
+        } else {
+            printf("\n");
+        }
     }
     closedir(dir);
-    if (count == 0) printf("(No .frvd models found)\n");
-    printf("\n");
+}
+
+static int cmd_fs_ls(int argc, char **argv) {
+    const char* path = FS_MOUNT_POINT; // Default to SD card root
+    if (argc > 1) {
+        path = argv[1];
+    }
+    
+    printf("%s/\n", path);
+    list_directory(path, 0);
     return 0;
 }
 
@@ -137,57 +150,129 @@ static int cmd_vad_threshold(int argc, char **argv) {
 }
 
 static int cmd_mic_gain(int argc, char **argv) {
-    if (argc < 2) {
-        printf("Usage:\n  mic_gain -s <multiplier>   : Set software gain (0.1-10.0)\n");
-        printf("  mic_gain -h <level>        : Set hardware mic gain (0-11)\n");
-        printf("  mic_gain -h                : Show current hardware gain\n");
-        printf("\nCurrent software gain: %.2fx\n", g_sw_gain);
-        if (audio_manager_is_initialized()) {
-            uint8_t hw_gain = 0;
-            if (audio_manager_get_mic_gain(&hw_gain) == ESP_OK) {
-                printf("Current hardware gain: Level %d (%ddB)\n", hw_gain, hw_gain * 2);
-            }
-        }
-        return 1;
-    }
-    if (strcmp(argv[1], "-s") == 0) {
-        if (argc == 2) {
-            printf("Software gain: %.2fx\n", g_sw_gain);
-            return 0;
-        }
-        if (argc != 3) return 1;
-        float val = atof(argv[2]);
-        if (val < 0.1f || val > 10.0f) return 1;
-        g_sw_gain = val;
-        printf("[OK] Software gain set to %.2fx\n", g_sw_gain);
+    if (argc == 2 && strcmp(argv[1], "-h") == 0) {
+        float hw_gain = 0;
+        audio_manager_get_mic_gain(&hw_gain);
+        printf("Current hardware gain: %.1f dB\n", hw_gain);
         return 0;
     }
+    
+    if (argc < 3) {
+        printf("Usage:\n");
+        printf("  mic_gain -s <multiplier>   : Set software gain (0.1-10.0)\n");
+        printf("  mic_gain -h <gain_db>      : Set hardware mic gain (0.0-42.0 dB)\n");
+        printf("  mic_gain -h                : Show current hardware gain\n\n");
+        
+        printf("Current software gain: %.2fx\n", g_sw_gain);
+        
+        float hw_gain = 0;
+        if (audio_manager_get_mic_gain(&hw_gain) == ESP_OK) {
+            printf("Current hardware gain: %.1f dB\n", hw_gain);
+        }
+        return 0;
+    }
+    
+    if (strcmp(argv[1], "-s") == 0) {
+        float mult = atof(argv[2]);
+        if (mult < 0.1f || mult > 10.0f) {
+            printf("[ERROR] Software gain multiplier must be between 0.1 and 10.0\n");
+            return 1;
+        }
+        g_sw_gain = mult;
+        printf("[OK] Software gain set to %.2fx\n", mult);
+        return 0;
+    }
+    
     if (strcmp(argv[1], "-h") == 0) {
         if (!audio_manager_is_initialized()) {
             printf("[ERROR] Audio not initialized\n");
             return 1;
         }
-        if (argc == 2) {
-            uint8_t gain = 0;
-            if (audio_manager_get_mic_gain(&gain) == ESP_OK)
-                printf("Hardware gain: Level %d (%ddB)\n", gain, gain * 2);
-            return 0;
+        float db = atof(argv[2]);
+        if (db < 0.0f || db > 42.0f) {
+            printf("[ERROR] Hardware gain must be between 0.0 and 42.0 dB\n");
+            return 1;
         }
-        if (argc != 3) return 1;
-        int level = atoi(argv[2]);
-        if (level < 0 || level > 11) return 1;
-        if (audio_manager_set_mic_gain(level) == ESP_OK) {
-            printf("[OK] Hardware gain set to level %d (%ddB)\n", level, level * 2);
+        if (audio_manager_set_mic_gain(db) == ESP_OK) {
+            printf("[OK] Hardware gain set to %.1f dB\n", db);
         }
         return 0;
     }
     return 1;
 }
 
+static int cmd_mic_select(int argc, char **argv) {
+    if (argc != 2) {
+        printf("Usage: mic_select <inmp441|es8311>\n");
+        return 0;
+    }
+    
+    if (strcmp(argv[1], "inmp441") == 0) {
+        audio_manager_set_mic(MIC_I2S1_INMP441);
+        printf("[OK] Selected INMP441 (I2S1) as active microphone.\n");
+    } else if (strcmp(argv[1], "es8311") == 0) {
+        audio_manager_set_mic(MIC_I2S0_ES8311);
+        printf("[OK] Selected ES8311 (I2S0) as active microphone.\n");
+    } else {
+        printf("[ERROR] Invalid mic type. Use 'inmp441' or 'es8311'.\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int cmd_mic_info(int argc, char **argv) {
+    mic_type_t mic = audio_manager_get_mic();
+    float hw_gain = 0.0f;
+    audio_manager_get_mic_gain(&hw_gain);
+    
+    // Using extern reference for software gain since it's in vad_runner.cpp, 
+    // or just display it as unknown if we can't easily grab it here.
+    // We'll just show the mic selection and hardware gain.
+    printf("\n=== Microphone Info ===\n");
+    if (mic == MIC_I2S1_INMP441) {
+        printf("Active Mic    : INMP441 (Digital I2S)\n");
+        printf("Interface     : I2S1\n");
+        printf("Pins          : BCLK=20, WS=21, DIN=22\n");
+        printf("Hardware Gain : N/A (Digital mic)\n");
+    } else {
+        printf("Active Mic    : ES8311 Onboard (Analog)\n");
+        printf("Interface     : I2S0 (via Codec)\n");
+        printf("Pins          : I2C(SCL=8, SDA=7), I2S(MCLK=13, BCLK=12, WS=10, DIN=11, DOUT=9)\n");
+        printf("Hardware Gain : %.1f dB\n", hw_gain);
+    }
+    printf("=======================\n\n");
+    return 0;
+}
+
+static int cmd_mic_level(int argc, char **argv) {
+    printf("Measuring mic levels for 1 second...\n");
+    float rms = 0.0f;
+    float peak = 0.0f;
+    int clipping_count = 0;
+    
+    esp_err_t err = audio_manager_get_levels(&rms, &peak, &clipping_count);
+    if (err != ESP_OK) {
+        printf("[ERROR] Failed to measure levels: %s\n", esp_err_to_name(err));
+        return 1;
+    }
+    
+    printf("\n=== Level Diagnostics ===\n");
+    printf("RMS Energy    : %.2f\n", rms);
+    printf("Max Peak      : %.2f\n", peak);
+    printf("Clipping      : %d samples\n", clipping_count);
+    printf("=========================\n\n");
+    
+    return 0;
+}
+
 static int cmd_speaker_vol(int argc, char **argv) {
     if (argc != 2) {
         printf("Usage: speaker_vol <0-100>\n");
-        return 1;
+        if (audio_manager_is_initialized()) {
+            // Note: es8311 driver does not have a get_voice_volume function easily accessible,
+            // but we at least shouldn't return an error just for asking usage.
+        }
+        return 0;
     }
     int vol = atoi(argv[1]);
     if (vol < 0 || vol > 100) {
@@ -203,8 +288,46 @@ static int cmd_speaker_vol(int argc, char **argv) {
     return 0;
 }
 
-static int cmd_vad_metrics(int argc, char **argv) {
-    metrics_print_summary();
+#include "dsp_pipeline.h"
+
+static int cmd_agc_info(int argc, char **argv) {
+    agc_config_t* agc = dsp_pipeline_get_agc_config();
+    printf("\n=== Automatic Gain Control (AGC) ===\n");
+    printf("Status      : %s\n", agc->enabled ? "ENABLED" : "DISABLED");
+    printf("Target RMS  : %.1f\n", agc->target_rms);
+    printf("Max Gain    : %.1fx\n", agc->max_gain);
+    printf("Min Gain    : %.1fx\n", agc->min_gain);
+    printf("Noise Gate  : %.1f RMS\n", agc->noise_gate_rms);
+    printf("Current Gain: %.2fx\n", agc->current_gain);
+    printf("Current RMS : %.1f\n", agc->smoothed_rms);
+    printf("====================================\n\n");
+    return 0;
+}
+
+static int cmd_agc_enable(int argc, char **argv) {
+    if (argc != 2) {
+        printf("Usage: agc_enable <0|1>\n");
+        return 0;
+    }
+    agc_config_t* agc = dsp_pipeline_get_agc_config();
+    agc->enabled = (atoi(argv[1]) != 0);
+    printf("[OK] AGC is now %s\n", agc->enabled ? "ENABLED" : "DISABLED");
+    return 0;
+}
+
+static int cmd_agc_config(int argc, char **argv) {
+    if (argc != 5) {
+        printf("Usage: agc_config <target_rms> <max_gain> <min_gain> <noise_gate_rms>\n");
+        printf("Example: agc_config 1500 25.0 1.0 150.0\n");
+        return 0;
+    }
+    agc_config_t* agc = dsp_pipeline_get_agc_config();
+    agc->target_rms = atof(argv[1]);
+    agc->max_gain = atof(argv[2]);
+    agc->min_gain = atof(argv[3]);
+    agc->noise_gate_rms = atof(argv[4]);
+    
+    printf("[OK] AGC configuration updated.\n");
     return 0;
 }
 
@@ -247,7 +370,7 @@ static int cmd_record_mic(int argc, char **argv) {
     
     uint32_t total_samples = (uint32_t)(duration_sec * FIREVAD_SAMPLE_RATE);
     uint32_t samples_read = 0;
-    const size_t chunk_size = 1600; // 100ms
+    const size_t chunk_size = FIREVAD_CHUNK_SAMPLES_100MS;
     int16_t* buffer = (int16_t*)malloc(chunk_size * sizeof(int16_t));
     if (!buffer) {
         printf("[ERROR] Failed to allocate memory for recording\n");
@@ -260,7 +383,7 @@ static int cmd_record_mic(int argc, char **argv) {
         if (samples_read + to_read > total_samples) {
             to_read = total_samples - samples_read;
         }
-        int read = audio_manager_read(buffer, to_read, 1000);
+        int read = audio_manager_read(buffer, to_read, FIREVAD_I2S_READ_TIMEOUT_MS);
         if (read > 0) {
             fwrite(buffer, sizeof(int16_t), read, f);
             samples_read += read;
@@ -284,83 +407,7 @@ static int cmd_record_mic(int argc, char **argv) {
     return 0;
 }
 
-static int cmd_play_wav(int argc, char **argv) {
-    if (argc != 2) {
-        printf("Usage: play_wav <filename.wav>\n");
-        return 1;
-    }
-    const char* filename = argv[1];
-    
-    if (!audio_manager_is_initialized()) {
-        if (audio_manager_init() != ESP_OK) return 1;
-    }
-    
-    char path[MAX_FILE_PATH];
-    snprintf(path, sizeof(path), "%s/%s", FS_MOUNT_POINT, filename);
-    
-    FILE* f = fopen(path, "rb");
-    if (!f) {
-        printf("[ERROR] Failed to open %s\n", path);
-        return 1;
-    }
-    
-    // Read RIFF header
-    char riff[12];
-    if (fread(riff, 1, 12, f) != 12 || memcmp(riff, "RIFF", 4) != 0 || memcmp(riff+8, "WAVE", 4) != 0) {
-        printf("[ERROR] Not a valid WAV file\n");
-        fclose(f);
-        return 1;
-    }
-    
-    bool data_found = false;
-    while (!feof(f)) {
-        char tag[4];
-        uint32_t size;
-        if (fread(tag, 1, 4, f) != 4) break;
-        if (fread(&size, 1, 4, f) != 4) break;
-        
-        if (memcmp(tag, "data", 4) == 0) {
-            data_found = true;
-            break;
-        }
-        fseek(f, size, SEEK_CUR);
-    }
-    
-    if (!data_found) {
-        printf("[ERROR] 'data' chunk not found\n");
-        fclose(f);
-        return 1;
-    }
-    
-    printf("Playing %s...\n", filename);
-    audio_manager_start_playback();
-    
-    const size_t chunk_size = 1600;
-    int16_t* buffer = (int16_t*)malloc(chunk_size * sizeof(int16_t));
-    if (!buffer) {
-        printf("[ERROR] Failed to allocate memory for playback\n");
-        fclose(f);
-        return 1;
-    }
-    
-    while (true) {
-        size_t bytes_read = fread(buffer, 1, chunk_size * sizeof(int16_t), f);
-        if (bytes_read == 0) break;
-        
-        size_t samples = bytes_read / sizeof(int16_t);
-        int written = audio_manager_write(buffer, samples, 1000);
-        if (written < 0) {
-            printf("[ERROR] Playback failed\n");
-            break;
-        }
-    }
-    
-    audio_manager_stop_playback();
-    free(buffer);
-    fclose(f);
-    printf("[OK] Playback finished\n");
-    return 0;
-}
+// cmd_play_wav removed (Dead Code)
 
 static int cmd_vad_infer_mic(int argc, char **argv) {
     if (!vad_runner_is_model_loaded()) {
@@ -385,8 +432,13 @@ static int cmd_vad_infer_mic(int argc, char **argv) {
     audio_manager_start_capture();
     vad_runner_reset();
     metrics_reset();
-    
     printf("\n=== Real-time VAD Test ===\n");
+    float pre_vad = vad_runner_get_pre_vad_multiplier();
+    if (pre_vad > 0.0f) {
+        printf("Pre-VAD:   Enabled (Multiplier: %.2f)\n", pre_vad);
+    } else {
+        printf("Pre-VAD:   Disabled (Raw NN Output)\n");
+    }
     printf("Threshold: %.2f\n", g_threshold);
     printf("Listening for %.1f seconds...\n", duration_sec);
     
@@ -428,47 +480,6 @@ static int cmd_vad_infer_mic(int argc, char **argv) {
     printf("\n=== Results ===\n");
     printf("Speech frames: %" PRIu32 " / %" PRIu32 " (%.1f%%)\n", speech_count, total_frames, (float)speech_count/total_frames*100.0f);
     
-    return 0;
-}
-
-static int cmd_fs_wav_list(int argc, char **argv) {
-    // Pass 1: find the longest filename
-    int col_w = 8; // minimum width ("Filename")
-    DIR *dir = opendir(FS_MOUNT_POINT);
-    if (!dir) {
-        printf("[ERROR] Failed to open directory\n");
-        return 1;
-    }
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-        if (!strstr(entry->d_name, ".wav")) continue;
-        int len = strlen(entry->d_name);
-        if (len > col_w) col_w = len;
-    }
-    closedir(dir);
-    col_w += 2;
-
-    // Pass 2: print table with exact column width
-    printf("\n%-*s | %s\n", col_w, "Filename", "Size");
-    for (int i = 0; i < col_w + 12; i++) printf("-");
-    printf("\n");
-
-    dir = opendir(FS_MOUNT_POINT);
-    if (!dir) return 1;
-    bool found = false;
-    while ((entry = readdir(dir)) != NULL) {
-        if (!strstr(entry->d_name, ".wav")) continue;
-        char filepath[MAX_FILE_PATH];
-        snprintf(filepath, sizeof(filepath), "%s/%s", FS_MOUNT_POINT, entry->d_name);
-        struct stat st;
-        if (stat(filepath, &st) == 0) {
-            printf("%-*s | %7ld KB\n", col_w, entry->d_name, st.st_size / 1024);
-            found = true;
-        }
-    }
-    if (!found) printf("No WAV files found in SPIFFS.\n");
-    printf("\n");
-    closedir(dir);
     return 0;
 }
 
@@ -539,6 +550,21 @@ static int cmd_vad_infer_wav(int argc, char **argv) {
         printf("Speech frames: %" PRIu32 " / %" PRIu32 " (%.1f%%)\n", speech_count, total_frames, (float)speech_count/total_frames*100.0f);
     }
     return 0;
+}
+
+static int cmd_vad_dump_golden(int argc, char **argv) {
+    if (argc != 2) {
+        printf("Usage: vad_dump_golden <filename.wav>\n");
+        return 1;
+    }
+    const char* filename = argv[1];
+    
+    if (!vad_runner_is_model_loaded()) {
+        printf("[ERROR] No model loaded. Use 'model_load' first.\n");
+        return 1;
+    }
+    
+    return vad_runner_dump_golden(filename);
 }
 
 static int cmd_vad_calibrate(int argc, char **argv) {
@@ -681,17 +707,68 @@ static int cmd_vad_sleep_mode(int argc, char **argv) {
 }
 
 // ---------------------------------------------------------
+// Benchmark Command
+// ---------------------------------------------------------
+
+static int cmd_benchmark(int argc, char **argv) {
+    if (!vad_runner_is_model_loaded()) {
+        printf("[ERROR] No model loaded. Load a model first to benchmark it.\n");
+        return 1;
+    }
+    
+    int num_frames = 1000; // 10 seconds of audio
+    if (argc >= 2) {
+        num_frames = atoi(argv[1]);
+    }
+    
+    printf("\n=== VAD Benchmark Mode ===\n");
+    printf("Frames to run: %d (%.1f seconds of audio)\n", num_frames, num_frames * 0.01f);
+    
+    // RAM Measurement
+    uint32_t free_heap_start = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    uint32_t free_spiram_start = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    printf("Free Internal RAM: %" PRIu32 " bytes\n", free_heap_start);
+    printf("Free SPIRAM: %" PRIu32 " bytes\n", free_spiram_start);
+    
+    const size_t frame_size = 160;
+    int16_t dummy_frame[frame_size];
+    for (size_t i = 0; i < frame_size; i++) {
+        dummy_frame[i] = (int16_t)((i % 100) * 10);
+    }
+    
+    vad_runner_reset();
+    benchmark_reset();
+    
+    int64_t start_time = esp_timer_get_time();
+    
+    for (int i = 0; i < num_frames; i++) {
+        uint32_t b_id = benchmark_start("Infer Frame");
+        vad_runner_infer_frame(dummy_frame);
+        benchmark_end(b_id);
+    }
+    
+    int64_t end_time = esp_timer_get_time();
+    int64_t total_us = end_time - start_time;
+    
+    printf("\n--- Results ---\n");
+    printf("Total Time: %lld us\n", total_us);
+    printf("Average Time per Frame: %lld us\n", total_us / num_frames);
+    printf("Real-time Factor (RTF): %.4f\n", (float)(total_us / num_frames) / 10000.0f);
+    
+    benchmark_print_results();
+    
+    return 0;
+}
+
+// ---------------------------------------------------------
 // Registration
 // ---------------------------------------------------------
 
 static int cmd_guide(int argc, char **argv) {
     printf("\n--- Quick Start Workflow ---\n");
-    printf("1. vad_model_list         - Show available VAD models\n");
+    printf("1. ls [path]              - Navigate the SD card and find files\n");
     printf("2. vad_model_load <model> - Load a VAD model from the list\n");
-    printf("3. fs_wav_list            - Show available audio files\n");
-    printf("4. play_wav <file>        - Play an audio file to test speaker\n");
     printf("5. record_mic test.wav 5  - Record 5s from mic to test hardware\n");
-    printf("6. vad_infer_mic 10       - Test VAD on live mic for 10s\n");
     printf("7. vad_metrics            - View latency metrics\n\n");
     return 0;
 }
@@ -729,8 +806,7 @@ void cmd_vad_cli_register(void) {
     
     esp_console_cmd_t cmd_load = {}; cmd_load.command = "vad_model_load"; cmd_load.help = "Load model"; cmd_load.hint = "<filename.frvd>"; cmd_load.func = &cmd_vad_model_load;
     esp_console_cmd_t cmd_info = {}; cmd_info.command = "vad_model_info"; cmd_info.help = "Model info"; cmd_info.func = &cmd_vad_model_info;
-    esp_console_cmd_t cmd_list = {}; cmd_list.command = "vad_model_list"; cmd_list.help = "List models"; cmd_list.func = &cmd_vad_model_list;
-    esp_console_cmd_t cmd_wav = {}; cmd_wav.command = "fs_wav_list"; cmd_wav.help = "List WAV files"; cmd_wav.func = &cmd_fs_wav_list;
+
     esp_console_cmd_t cmd_thr = {}; cmd_thr.command = "vad_threshold"; cmd_thr.help = "Set threshold"; cmd_thr.hint = "<0.0-1.0>"; cmd_thr.func = &cmd_vad_threshold;
     esp_console_cmd_t cmd_gn = {}; cmd_gn.command = "mic_gain"; cmd_gn.help = "Set mic gain (use -s for software, -h for hardware ES8311 PGA)"; cmd_gn.hint = "[-s <mult>] [-h <0-11>]"; cmd_gn.func = &cmd_mic_gain;
     ESP_ERROR_CHECK(esp_console_cmd_register(&cmd_gn));
@@ -738,32 +814,52 @@ void cmd_vad_cli_register(void) {
     esp_console_cmd_t cmd_sl = {}; cmd_sl.command = "vad_sleep_mode"; cmd_sl.help = "Enter Software Duty-Cycling VAD mode using Light Sleep"; cmd_sl.hint = "[<sleep_interval_ms>]"; cmd_sl.func = &cmd_vad_sleep_mode;
     ESP_ERROR_CHECK(esp_console_cmd_register(&cmd_sl));
     esp_console_cmd_t cmd_sv = {}; cmd_sv.command = "speaker_vol"; cmd_sv.help = "Set speaker volume"; cmd_sv.hint = "<0-100>"; cmd_sv.func = &cmd_speaker_vol;
-    esp_console_cmd_t cmd_met = {}; cmd_met.command = "vad_metrics"; cmd_met.help = "Show performance metrics"; cmd_met.func = &cmd_vad_metrics;
+    
+    esp_console_cmd_t cmd_agc_i = {}; cmd_agc_i.command = "agc_info"; cmd_agc_i.help = "Show AGC status"; cmd_agc_i.func = &cmd_agc_info;
+    esp_console_cmd_register(&cmd_agc_i);
+    esp_console_cmd_t cmd_agc_e = {}; cmd_agc_e.command = "agc_enable"; cmd_agc_e.help = "Enable/Disable AGC"; cmd_agc_e.hint = "<0|1>"; cmd_agc_e.func = &cmd_agc_enable;
+    esp_console_cmd_register(&cmd_agc_e);
+    esp_console_cmd_t cmd_agc_c = {}; cmd_agc_c.command = "agc_config"; cmd_agc_c.help = "Configure AGC parameters"; cmd_agc_c.hint = "<target> <max_gain> <min_gain> <gate>"; cmd_agc_c.func = &cmd_agc_config;
+    esp_console_cmd_register(&cmd_agc_c);
+    
     esp_console_cmd_t cmd_rec = {}; cmd_rec.command = "record_mic"; cmd_rec.help = "Record mic to WAV"; cmd_rec.hint = "<filename.wav> <seconds>"; cmd_rec.func = &cmd_record_mic;
-    esp_console_cmd_t cmd_pl = {}; cmd_pl.command = "play_wav"; cmd_pl.help = "Play WAV file"; cmd_pl.hint = "<filename.wav>"; cmd_pl.func = &cmd_play_wav;
+    
     esp_console_cmd_t cmd_tm = {}; cmd_tm.command = "vad_infer_mic"; cmd_tm.help = "Test VAD on mic"; cmd_tm.hint = "[seconds]"; cmd_tm.func = &cmd_vad_infer_mic;
     esp_console_cmd_t cmd_tw = {}; cmd_tw.command = "vad_infer_wav"; cmd_tw.help = "Test VAD on WAV file"; cmd_tw.hint = "<filename.wav>"; cmd_tw.func = &cmd_vad_infer_wav;
     esp_console_cmd_t cmd_gd = {}; cmd_gd.command = "guide"; cmd_gd.help = "Show Quick Start workflow"; cmd_gd.func = &cmd_guide;
+    esp_console_cmd_t cmd_dump = {}; cmd_dump.command = "vad_dump_golden"; cmd_dump.help = "Dump Golden Test data to SD"; cmd_dump.hint = "<filename.wav>"; cmd_dump.func = &cmd_vad_dump_golden;
     
     esp_console_cmd_t cmd_cal = {}; cmd_cal.command = "vad_calibrate"; cmd_cal.help = "Calibrate Pre-VAD"; cmd_cal.hint = "[seconds]"; cmd_cal.func = &cmd_vad_calibrate;
     esp_console_cmd_t cmd_pvd = {}; cmd_pvd.command = "vad_pre_vad"; cmd_pvd.help = "Set Pre-VAD multiplier"; cmd_pvd.hint = "<multiplier>"; cmd_pvd.func = &cmd_vad_pre_vad;
     
     esp_console_cmd_t cmd_tpie = {}; cmd_tpie.command = "vad_test_pie"; cmd_tpie.help = "Test PIE assembly"; cmd_tpie.func = &cmd_vad_test_pie;
+    esp_console_cmd_t cmd_ls = {}; cmd_ls.command = "ls"; cmd_ls.help = "Admin: List directory contents"; cmd_ls.hint = "[path]"; cmd_ls.func = &cmd_fs_ls;
+    ESP_ERROR_CHECK(esp_console_cmd_register(&cmd_ls));
     esp_console_cmd_register(&cmd_tpie);
+    
+    esp_console_cmd_t cmd_bm = {}; cmd_bm.command = "benchmark"; cmd_bm.help = "Benchmark CPU/RAM usage of current model"; cmd_bm.hint = "[num_frames]"; cmd_bm.func = &cmd_benchmark;
+    esp_console_cmd_register(&cmd_bm);
     
     esp_console_cmd_register(&cmd_load);
     esp_console_cmd_register(&cmd_info);
-    esp_console_cmd_register(&cmd_list);
-    esp_console_cmd_register(&cmd_wav);
     esp_console_cmd_register(&cmd_thr);
     esp_console_cmd_register(&cmd_gn);
+    
+    esp_console_cmd_t cmd_msel = {}; cmd_msel.command = "mic_select"; cmd_msel.help = "Select active microphone"; cmd_msel.hint = "<inmp441|es8311>"; cmd_msel.func = &cmd_mic_select;
+    esp_console_cmd_register(&cmd_msel);
+    
+    esp_console_cmd_t cmd_minf = {}; cmd_minf.command = "mic_info"; cmd_minf.help = "Show microphone info"; cmd_minf.func = &cmd_mic_info;
+    esp_console_cmd_register(&cmd_minf);
+    
+    esp_console_cmd_t cmd_mlev = {}; cmd_mlev.command = "mic_level"; cmd_mlev.help = "Measure raw RMS/Peak levels (1s)"; cmd_mlev.func = &cmd_mic_level;
+    esp_console_cmd_register(&cmd_mlev);
+    
     esp_console_cmd_register(&cmd_sv);
-    esp_console_cmd_register(&cmd_met);
     esp_console_cmd_register(&cmd_rec);
-    esp_console_cmd_register(&cmd_pl);
     esp_console_cmd_register(&cmd_tm);
     esp_console_cmd_register(&cmd_tw);
     esp_console_cmd_register(&cmd_gd);
     esp_console_cmd_register(&cmd_cal);
     esp_console_cmd_register(&cmd_pvd);
+    esp_console_cmd_register(&cmd_dump);
 }

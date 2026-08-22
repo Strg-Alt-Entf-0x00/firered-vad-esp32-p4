@@ -24,19 +24,19 @@ esp_err_t audio_manager_init(void);
 /**
  * @brief Deinitialize the audio subsystem
  */
-esp_err_t audio_manager_deinit(void);
+
 
 /**
- * @brief Set the microphone input gain (hardware ADC gain)
+ * @brief Set the microphone input gain (hardware ADC gain in dB)
  * 
- * @param gain_level 0-11 mapping to 0dB-24dB
+ * @param gain_db 0.0 to 42.0 dB
  */
-esp_err_t audio_manager_set_mic_gain(uint8_t gain_level);
+esp_err_t audio_manager_set_mic_gain(float gain_db);
 
 /**
- * @brief Get current microphone hardware gain
+ * @brief Get current microphone hardware gain in dB
  */
-esp_err_t audio_manager_get_mic_gain(uint8_t* gain_level);
+esp_err_t audio_manager_get_mic_gain(float* gain_db);
 
 /**
  * @brief Set the speaker output volume (hardware DAC gain)
@@ -44,6 +44,21 @@ esp_err_t audio_manager_get_mic_gain(uint8_t* gain_level);
  * @param vol_level 0-100 (percentage)
  */
 esp_err_t audio_manager_set_speaker_vol(uint8_t vol_level);
+
+typedef enum {
+    MIC_I2S1_INMP441,
+    MIC_I2S0_ES8311
+} mic_type_t;
+
+/**
+ * @brief Set the active microphone input path
+ */
+esp_err_t audio_manager_set_mic(mic_type_t mic);
+
+/**
+ * @brief Get the active microphone input path
+ */
+mic_type_t audio_manager_get_mic(void);
 
 /**
  * @brief Start continuous audio capture (I2S RX)
@@ -56,7 +71,12 @@ esp_err_t audio_manager_start_capture(void);
 esp_err_t audio_manager_stop_capture(void);
 
 /**
- * @brief Read audio samples from the I2S RX channel
+ * @brief Get diagnostics levels from 1 second of audio
+ */
+esp_err_t audio_manager_get_levels(float *rms, float *peak, int *clipping_count);
+
+/**
+ * @brief Read audio samples from the active I2S RX channel
  * 
  * @param buffer Output buffer
  * @param samples Number of samples to read

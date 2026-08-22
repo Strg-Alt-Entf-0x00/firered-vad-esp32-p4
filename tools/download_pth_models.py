@@ -5,8 +5,8 @@ FireRedVAD Model Downloader
 Downloads original FireRedVAD models from Hugging Face for conversion to ESP32-P4 format.
 
 Usage:
-    python download_models.py --output-dir ../original_models
-    python download_models.py --model stream-vad --output-dir ../original_models
+    python download_pth_models.py --output-dir ../pth_models
+    python download_pth_models.py --model stream-vad --output-dir ../pth_models
 """
 
 import argparse
@@ -100,20 +100,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
   # Download all models
-  python download_models.py --all --output-dir ../original_models
+  python download_pth_models.py --all --output-dir ../pth_models
   
   # Download only Stream-VAD
-  python download_models.py --model stream-vad --output-dir ../original_models
+  python download_pth_models.py --model stream-vad --output-dir ../pth_models
   
   # Download Stream-VAD and VAD
-  python download_models.py --model stream-vad --model vad --output-dir ../original_models
+  python download_pth_models.py --model stream-vad --model vad --output-dir ../pth_models
 """)
     
     parser.add_argument("--model", action="append", choices=list(MODELS.keys()),
                         help="Model to download (can be specified multiple times)")
     parser.add_argument("--all", action="store_true",
                         help="Download all available models")
-    parser.add_argument("--output-dir", default="./original_models",
+    parser.add_argument("--output-dir", default="../pth_models",
                         help="Output directory for downloaded models")
     
     args = parser.parse_args()

@@ -23,6 +23,10 @@ esp_err_t esp_firevad_dsp_init(void);
  * @param out_energy Optional pointer to store the RMS energy of the frame.
  */
 void esp_firevad_dsp_extract_features(const int16_t* pcm_160, float* features_80, float* out_energy);
+/**
+ * Reset DSP internal state (window buffers, history)
+ */
+void esp_firevad_dsp_reset(void);
 
 #ifdef __cplusplus
 }

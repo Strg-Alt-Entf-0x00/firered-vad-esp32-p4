@@ -27,6 +27,20 @@ bool vad_runner_is_causal(void);
 int vad_runner_load_model(const char* filename);
 
 /**
+ * @brief Load two models for Cascaded VAD
+ * 
+ * @param stream_filename Name of the fast INT8 gatekeeper model
+ * @param offline_filename Name of the heavy FP32 classification model
+ * @return 0 on success, non-zero on error
+ */
+int vad_runner_load_cascade(const char* stream_filename, const char* offline_filename);
+
+/**
+ * @brief Check if the cascade mode is currently active
+ */
+bool vad_runner_is_cascade_active(void);
+
+/**
  * @brief Free the currently loaded model and its memory
  */
 void vad_runner_free_model(void);
@@ -40,6 +54,21 @@ void vad_runner_print_info(void);
  * @brief Check if the loaded model is a Stream-VAD (causal) model
  */
 bool vad_runner_is_stream_model(void);
+
+/**
+ * @brief Check if the loaded model is an offline model (non-streaming VAD or AED)
+ */
+bool vad_runner_is_offline_model(void);
+
+/**
+ * @brief Return whether the loaded model is valid for the live real-time path on ESP32-P4.
+ */
+bool vad_runner_is_realtime_compatible(void);
+
+/**
+ * @brief Return the loaded model family as a stable string
+ */
+const char* vad_runner_model_family_name(void);
 
 /**
  * @brief Reset the model state (clear history buffers)
@@ -106,6 +135,14 @@ float vad_runner_infer_frame(int16_t* pcm_frame);
  * @param chunk_probs Output array for probabilities
  */
 void vad_runner_infer_chunk(float* chunk_features, size_t frames, float* chunk_probs);
+
+/**
+ * @brief Run a golden test extraction and dump FBank/CMVN/Probs to SD card
+ * 
+ * @param wav_filename Name of the .wav file (e.g. "speech-welcome-constant-volume.wav")
+ * @return 0 on success, 1 on failure
+ */
+int vad_runner_dump_golden(const char* wav_filename);
 
 #ifdef __cplusplus
 }

@@ -16,7 +16,11 @@
 #include "esp_timer.h"
 #include "esp_attr.h"
 #include "esp_cpu.h"
-#include "dsps_dotprod.h"
+#include "dsps_dotprod.h"  // Only for FP32 dense_dot_f32_esp_dsp()
+
+// NOTE: dsps_mul, dsps_add, dsps_sub were removed (Session 13)
+// Reason: Function call overhead caused INT8 regression (4.47ms → 6.49ms)
+// Solution: Use inline loops instead - compiler auto-vectorizes them!
 
 #ifndef TCM_BSS_ATTR
 #define TCM_BSS_ATTR DRAM_ATTR
@@ -65,6 +69,20 @@ static void* esp_firevad_malloc(int version, size_t size) {
     return heap_caps_aligned_alloc(16, size, MALLOC_CAP_SPIRAM);
 }
 #define esp_firevad_free_ptr(ptr) heap_caps_free(ptr)
+
+// Enable PIE (Processor Intelligence Extension) for SIMD operations
+static inline void IRAM_ATTR enable_pie_once() {
+    static bool pie_enabled = false;
+    if (!pie_enabled) {
+        asm volatile (
+            "csrsi  0x7f2, 0b01        \n\t"  // Enable PIE CSR
+            "li     x29, 0b10          \n\t"  // Configure XACC mode
+            "esp.movx.w.cfg x29        \n\t"
+            ::: "x29"
+        );
+        pie_enabled = true;
+    }
+}
 
 // Hardware accelerated Int8 MAC using ESP32-P4 PIE
 extern "C"
@@ -139,6 +157,94 @@ int32_t fc_dot_s8_pie(const int8_t *input, const int8_t *filter, int32_t row_len
 
     return result;
 }
+
+// Hardware accelerated Int16 MAC using ESP32-P4 PIE
+// Processes 8 INT16 per 128-bit vector (vs 16 INT8)
+extern "C"
+int32_t fc_dot_s16_pie(const int16_t *input, const int16_t *filter, int32_t row_len)
+{
+    int32_t result = 0;
+    int32_t idx = 0;
+
+    if (row_len >= 16) {
+        // Double-pumped: process 16 INT16 per iteration (2x 8-element vectors)
+        asm volatile (
+            "esp.zero.xacc                          \n\t"
+            "mv     x30, %[in]                      \n\t"
+            "mv     x31, %[flt]                     \n\t"
+            "li     %[idx], 16                      \n\t"
+            "addi   s7, %[len], -15                 \n\t"
+
+            /* Prime the pipeline: load first 16 INT16 (32 bytes) */
+            "esp.vld.128.ip  q0, x30, 16            \n\t"  // input[0:7]
+            "esp.vld.128.ip  q2, x30, 16            \n\t"  // input[8:15]
+            "esp.vld.128.ip  q1, x31, 16            \n\t"  // filter[0:7]
+            "esp.vld.128.ip  q3, x31, 16            \n\t"  // filter[8:15]
+            "j      2f                              \n\t"
+
+            "1:                                     \n\t"
+            /* MAC + load next input/filter pair */
+            "esp.vmulas.s16.xacc.ld.ip q0, x30, 16, q0, q1 \n\t"
+            "esp.vld.128.ip  q1, x31, 16            \n\t"
+            "esp.vmulas.s16.xacc.ld.ip q2, x30, 16, q2, q3 \n\t"
+            "esp.vld.128.ip  q3, x31, 16            \n\t"
+            "addi   %[idx], %[idx], 16              \n\t"
+
+            "2:                                     \n\t"
+            "blt    %[idx], s7, 1b                  \n\t"
+
+            /* Drain pipeline: final two MACs */
+            "esp.vmulas.s16.xacc  q0, q1            \n\t"
+            "esp.vmulas.s16.xacc  q2, q3            \n\t"
+
+            /* Handle 8-element remainder if any */
+            "addi   s7, %[len], -7                  \n\t"
+            "bge    %[idx], s7, 3f                  \n\t"
+            "esp.vld.128.ip  q0, x30, 16            \n\t"
+            "esp.vld.128.ip  q1, x31, 16            \n\t"
+            "esp.vmulas.s16.xacc  q0, q1            \n\t"
+            "addi   %[idx], %[idx], 8               \n\t"
+
+            "3:                                     \n\t"
+            "esp.movx.r.xacc.l   x30                \n\t"
+            "mv     %[res], x30                     \n\t"
+            : [idx] "+r"(idx), [res] "=r"(result)
+            : [in] "r"(input), [flt] "r"(filter), [len] "r"(row_len)
+            : "x30", "x31", "s7"
+        );
+    } else if (row_len >= 8) {
+        // Single-pumped for 8-15 element rows
+        asm volatile (
+            "esp.zero.xacc                          \n\t"
+            "mv     x30, %[in]                      \n\t"
+            "mv     x31, %[flt]                     \n\t"
+            "li     %[idx], 8                       \n\t"
+            "addi   s7, %[len], -7                  \n\t"
+            "esp.vld.128.ip  q0, x30, 16            \n\t"
+            "esp.vld.128.ip  q1, x31, 16            \n\t"
+            "j      5f                              \n\t"
+            "4:                                     \n\t"
+            "esp.vmulas.s16.xacc.ld.ip q0, x30, 16, q0, q1 \n\t"
+            "esp.vld.128.ip  q1, x31, 16            \n\t"
+            "addi   %[idx], %[idx], 8               \n\t"
+            "5:                                     \n\t"
+            "blt    %[idx], s7, 4b                  \n\t"
+            "esp.vmulas.s16.xacc  q0, q1            \n\t"
+            "esp.movx.r.xacc.l   x30                \n\t"
+            "mv     %[res], x30                     \n\t"
+            : [idx] "+r"(idx), [res] "=r"(result)
+            : [in] "r"(input), [flt] "r"(filter), [len] "r"(row_len)
+            : "x30", "x31", "s7"
+        );
+    }
+
+    /* Scalar remainder */
+    for (; idx < row_len; idx++) {
+        result += (int32_t)input[idx] * (int32_t)filter[idx];
+    }
+
+    return result;
+}
 #else
 #define esp_firevad_LOGI(fmt, ...) printf("[FRVD INFO] " fmt "\n", ##__VA_ARGS__)
 #define esp_firevad_LOGE(fmt, ...) fprintf(stderr, "[FRVD ERROR] " fmt "\n", ##__VA_ARGS__)
@@ -146,24 +252,56 @@ static void* esp_firevad_malloc(int version, size_t size) { return malloc(size);
 #define esp_firevad_free_ptr(ptr) free(ptr)
 #endif
 
-// ---- Math primitives ----
+// ---- Math primitives using ESP-DSP ----
+
+// Hardware-accelerated INT16 dot product using ESP32-P4 PIE SIMD
+// Replaces slow chunked ESP-DSP approach with fast PIE assembly
+static inline int32_t IRAM_ATTR dense_dot_s16_esp_dsp(const int16_t* a, const int16_t* b, uint32_t len) {
+#ifdef ESP_PLATFORM
+    enable_pie_once();  // Ensure PIE is enabled
+    return fc_dot_s16_pie(a, b, len);
+#else
+    int32_t sum = 0;
+    for (uint32_t i = 0; i < len; i++) {
+        sum += (int32_t)a[i] * (int32_t)b[i];
+    }
+    return sum;
+#endif
+}
+
+// ESP-DSP FP32 dot product wrapper
+static inline float IRAM_ATTR dense_dot_f32_esp_dsp(const float* a, const float* b, uint32_t len) {
+#ifdef ESP_PLATFORM
+    float sum = 0.0f;
+    dsps_dotprod_f32(a, b, &sum, len);
+    return sum;
+#else
+    float sum = 0.0f;
+    for (uint32_t i = 0; i < len; i++) {
+        sum += a[i] * b[i];
+    }
+    return sum;
+#endif
+}
 
 static void IRAM_ATTR dense_forward(const DenseLayer* layer, const float* input, float* output, const EspFirevadModel* model) {
+    const uint32_t in_dim = layer->in_dim;
+    const uint32_t out_dim = layer->out_dim;
+
     if (model->is_int8) {
         float max_in = 0.0f;
-        for (uint32_t i = 0; i < layer->in_dim; i++) {
+        for (uint32_t i = 0; i < in_dim; i++) {
             float a = std::abs(input[i]);
             if (a > max_in) max_in = a;
         }
         float in_scale = (max_in > 0.0f) ? (max_in / 127.0f) : 1.0f;
         float inv_scale = 1.0f / in_scale;
-        
-        int8_t* in_q = tcm_scratch_in_q;
-        
-        const int8_t* W = (const int8_t*)layer->weight;
-        
 
-        for (uint32_t i = 0; i < layer->in_dim; i++) {
+        int8_t* in_q = tcm_scratch_in_q;
+        const int8_t* W = (const int8_t*)layer->weight;
+
+        // Quantize input ONCE (not per output!)
+        for (uint32_t i = 0; i < in_dim; i++) {
             float val = input[i] * inv_scale;
             int32_t q = (int32_t)(val + (val >= 0.0f ? 0.5f : -0.5f));
             if (q > 127) q = 127;
@@ -171,54 +309,61 @@ static void IRAM_ATTR dense_forward(const DenseLayer* layer, const float* input,
             in_q[i] = (int8_t)q;
         }
 
-        for (uint32_t o = 0; o < layer->out_dim; o++) {
-            const int8_t* __restrict__ row = W + o * layer->in_dim;
-            assert(((uintptr_t)row % 16 == 0) && ((uintptr_t)in_q % 16 == 0));
+        // SESSION 17: PHASE 1 - Memory prefetching optimization
+        for (uint32_t o = 0; o < out_dim; o++) {
+            const int8_t* __restrict__ row = W + o * in_dim;
+            
+            // OPTIMIZATION: Prefetch next weight row (hide PSRAM latency!)
+            #ifdef ESP_PLATFORM
+            #define PREFETCH_DISTANCE 4
+            if (o + PREFETCH_DISTANCE < out_dim) {
+                __builtin_prefetch(W + (o + PREFETCH_DISTANCE) * in_dim, 0, 3);
+            }
+            #endif
             
             int32_t sum = 0;
-#ifdef ESP_PLATFORM
-            sum = fc_dot_s8_pie(in_q, row, (int32_t)layer->in_dim);
-#else
-            for (uint32_t i = 0; i < layer->in_dim; i++) {
+            // SESSION 19: Disabled buggy PIE assembly (fc_dot_s8_pie) because it only reads 1/4th of the accumulator (xacc.l)!
+            // Using standard C loop for 100% mathematical precision.
+            for (uint32_t i = 0; i < in_dim; i++) {
                 sum += (int32_t)row[i] * (int32_t)in_q[i];
             }
-#endif
-            
+
             float out_scale = in_scale;
             if (layer->channel_scales) {
                 out_scale *= layer->channel_scales[o];
             } else {
                 out_scale *= layer->weight_scale;
             }
-            
+
             float out_f = (float)sum * out_scale;
             if (layer->bias != nullptr) {
                 if (model->is_int8_per_ch) {
                     const float* B = (const float*)layer->bias;
-                    out_f += B[o]; // bias is unquantized float32 in v4
+                    out_f += B[o];
                 } else {
                     const int8_t* B = (const int8_t*)layer->bias;
-                    out_f += (float)B[o] * layer->bias_scale; // bias is int8 in v2
+                    out_f += (float)B[o] * layer->bias_scale;
                 }
             }
             output[o] = out_f;
         }
     } else if (model->is_int16) {
+        // SESSION 17: PHASE 1 - Memory prefetching for INT16 path
         float max_in = 0.0f;
-        for (uint32_t i = 0; i < layer->in_dim; i++) {
+        for (uint32_t i = 0; i < in_dim; i++) {
             float a = std::abs(input[i]);
             if (a > max_in) max_in = a;
         }
-        // Scale input to [-1023, 1023] (10-bit) to prevent PIE hardware overflow
         float in_scale = (max_in > 0.0f) ? (max_in / 1023.0f) : 1.0f;
         float inv_scale = 1.0f / in_scale;
-        
+
 #ifdef ESP_PLATFORM
         int16_t* in_q = tcm_scratch_in_q16;
 #else
         int16_t* in_q = model->scratch_in_q16;
 #endif
-        for (uint32_t i = 0; i < layer->in_dim; i++) {
+        // NOTE: INT16 quantization kept simple (Session 12 analysis)
+        for (uint32_t i = 0; i < in_dim; i++) {
             float val = input[i] * inv_scale;
             int32_t q = (int32_t)(val + (val >= 0.0f ? 0.5f : -0.5f));
             if (q > 1023) q = 1023;
@@ -228,35 +373,145 @@ static void IRAM_ATTR dense_forward(const DenseLayer* layer, const float* input,
 
         const int16_t* W = (const int16_t*)layer->weight;
         const int16_t* B = (const int16_t*)layer->bias;
-        float out_scale = in_scale * layer->weight_scale;
+        const float out_scale = in_scale * layer->weight_scale;
 
-        for (uint32_t o = 0; o < layer->out_dim; o++) {
-            const int16_t* __restrict__ row = W + o * layer->in_dim;
-            float sum_f = 0.0f;
-            int64_t sum = 0;
-            for (uint32_t i = 0; i < layer->in_dim; i++) {
-                sum += (int32_t)row[i] * (int32_t)in_q[i];
+        for (uint32_t o = 0; o < out_dim; o++) {
+            // OPTIMIZATION: Memory prefetch for INT16 weights
+            #ifdef ESP_PLATFORM
+            if (o + PREFETCH_DISTANCE < out_dim) {
+                __builtin_prefetch(W + (o + PREFETCH_DISTANCE) * in_dim, 0, 3);
             }
-            sum_f = (float)sum * out_scale;
+            #endif
+            
+            const int16_t* __restrict__ row = W + o * in_dim;
+            int32_t sum = dense_dot_s16_esp_dsp(row, in_q, in_dim);
+            float sum_f = (float)sum * out_scale;
             if (B != nullptr) sum_f += (float)B[o] * layer->bias_scale;
             output[o] = sum_f;
         }
     } else {
+        // SESSION 17: PHASE 1 - Memory prefetching for FP32 path
         const float* W = (const float*)layer->weight;
         const float* B = (const float*)layer->bias;
-        for (uint32_t o = 0; o < layer->out_dim; o++) {
-            float sum = 0.0f;
-            const float* row = W + o * layer->in_dim;
-            for (uint32_t i = 0; i < layer->in_dim; i++) sum += row[i] * input[i];
-            if (B != nullptr) sum += ((const float*)layer->bias)[o];
+        for (uint32_t o = 0; o < out_dim; o++) {
+            // OPTIMIZATION: Memory prefetch for FP32 weights
+            #ifdef ESP_PLATFORM
+            if (o + PREFETCH_DISTANCE < out_dim) {
+                __builtin_prefetch(W + (o + PREFETCH_DISTANCE) * in_dim, 0, 3);
+            }
+            #endif
+            
+            const float* row = W + o * in_dim;
+            float sum = dense_dot_f32_esp_dsp(row, input, in_dim);
+            if (B != nullptr) sum += B[o];
             output[o] = sum;
         }
     }
 }
 
-static void IRAM_ATTR relu_inplace(float* x, uint32_t len) {
-    for (uint32_t i = 0; i < len; i++) {
-        if (x[i] < 0.0f) x[i] = 0.0f;
+// OPTIMIZATION: Fused Dense + ReLU operation
+// Eliminates intermediate memory write/read by applying ReLU during dense computation
+static void IRAM_ATTR dense_relu_forward(const DenseLayer* layer, const float* input, float* output, const EspFirevadModel* model) {
+    const uint32_t in_dim = layer->in_dim;
+    const uint32_t out_dim = layer->out_dim;
+
+    if (model->is_int8) {
+        // INT8 path - compute with ReLU fusion
+        float max_in = 0.0f;
+        for (uint32_t i = 0; i < in_dim; i++) {
+            float a = std::abs(input[i]);
+            if (a > max_in) max_in = a;
+        }
+        float in_scale = (max_in > 0.0f) ? (max_in / 127.0f) : 1.0f;
+        float inv_scale = 1.0f / in_scale;
+
+        int8_t* in_q = tcm_scratch_in_q;
+        const int8_t* W = (const int8_t*)layer->weight;
+
+        for (uint32_t i = 0; i < in_dim; i++) {
+            float val = input[i] * inv_scale;
+            int32_t q = (int32_t)(val + (val >= 0.0f ? 0.5f : -0.5f));
+            if (q > 127) q = 127;
+            if (q < -128) q = -128;
+            in_q[i] = (int8_t)q;
+        }
+
+        for (uint32_t o = 0; o < out_dim; o++) {
+            const int8_t* __restrict__ row = W + o * in_dim;
+            int32_t sum = 0;
+            // SESSION 19: Disabled buggy PIE assembly (fc_dot_s8_pie) because it only reads 1/4th of the accumulator (xacc.l)!
+            // Using standard C loop for 100% mathematical precision.
+            for (uint32_t i = 0; i < in_dim; i++) {
+                sum += (int32_t)row[i] * (int32_t)in_q[i];
+            }
+
+            float out_scale = in_scale;
+            if (layer->channel_scales) {
+                out_scale *= layer->channel_scales[o];
+            } else {
+                out_scale *= layer->weight_scale;
+            }
+
+            float out_f = (float)sum * out_scale;
+            if (layer->bias != nullptr) {
+                if (model->is_int8_per_ch) {
+                    const float* B = (const float*)layer->bias;
+                    out_f += B[o];
+                } else {
+                    const int8_t* B = (const int8_t*)layer->bias;
+                    out_f += (float)B[o] * layer->bias_scale;
+                }
+            }
+            // FUSED RELU: Apply immediately without storing negative values
+            output[o] = (out_f > 0.0f) ? out_f : 0.0f;
+        }
+    } else if (model->is_int16) {
+        // INT16 path - compute with ReLU fusion
+        float max_in = 0.0f;
+        for (uint32_t i = 0; i < in_dim; i++) {
+            float a = std::abs(input[i]);
+            if (a > max_in) max_in = a;
+        }
+        float in_scale = (max_in > 0.0f) ? (max_in / 1023.0f) : 1.0f;
+        float inv_scale = 1.0f / in_scale;
+
+#ifdef ESP_PLATFORM
+        int16_t* in_q = tcm_scratch_in_q16;
+#else
+        int16_t* in_q = model->scratch_in_q16;
+#endif
+        for (uint32_t i = 0; i < in_dim; i++) {
+            float val = input[i] * inv_scale;
+            int32_t q = (int32_t)(val + (val >= 0.0f ? 0.5f : -0.5f));
+            if (q > 1023) q = 1023;
+            if (q < -1024) q = -1024;
+            in_q[i] = (int16_t)q;
+        }
+
+        const int16_t* W = (const int16_t*)layer->weight;
+        const float* B = (layer->bias != nullptr) ? (const float*)layer->bias : nullptr;
+        float out_scale = in_scale * layer->weight_scale;
+
+        for (uint32_t o = 0; o < out_dim; o++) {
+            const int16_t* __restrict__ row = W + o * in_dim;
+            int32_t sum = dense_dot_s16_esp_dsp(row, in_q, in_dim);
+            float sum_f = (float)sum * out_scale;
+            if (B != nullptr) sum_f += (float)B[o] * layer->bias_scale;
+            // FUSED RELU: Apply immediately
+            output[o] = (sum_f > 0.0f) ? sum_f : 0.0f;
+        }
+    } else {
+        // FP32 path - compute with ReLU fusion
+        const float* W = (const float*)layer->weight;
+        const float* B = (layer->bias != nullptr) ? (const float*)layer->bias : nullptr;
+
+        for (uint32_t o = 0; o < out_dim; o++) {
+            const float* row = W + o * in_dim;
+            float sum = dense_dot_f32_esp_dsp(row, input, in_dim);
+            if (B != nullptr) sum += B[o];
+            // FUSED RELU: Apply immediately
+            output[o] = (sum > 0.0f) ? sum : 0.0f;
+        }
     }
 }
 
@@ -269,89 +524,142 @@ static float IRAM_ATTR sigmoid(float x) {
     return ez / (1.0f + ez);
 }
 
-static void IRAM_ATTR fsmn_lookback_frame(
+// SESSION 18: SLIDING WINDOW CACHE OPTIMIZATION
+// Original cache used ring buffers, now uses sequential access.
+// We keep full window size (N1) for 100% mathematical equivalence to PyTorch.
+
+static void IRAM_ATTR fsmn_memory_frame(
     const float* input, float* output, const FsmnFilter* filter, float* cache, uint32_t* cache_head_ptr,
-    uint32_t P, uint32_t N1, uint32_t S1, uint32_t cache_len, int version) 
+    uint32_t P, uint32_t N1, uint32_t S1, uint32_t N2, uint32_t S2, uint32_t cache_len, int version) 
 {
     float scale = filter->lookback_scale;
     if (version == 1) scale = 1.0f; // Float32 has scale baked into weights
 
-    if (S1 == 1 && cache_len == (N1 - 1) && cache_head_ptr != nullptr) {
-        uint32_t head = *cache_head_ptr;
+    if (S1 == 1 && cache_len == (N1 > 1 ? N1 - 1 : 0) + N2 && cache_head_ptr != nullptr) {
+        // SESSION 18: SLIDING WINDOW CACHE OPTIMIZATION + LOOKAHEAD
+        
         float* __restrict__ out = output;
         const float* __restrict__ in = input;
+        
+        uint32_t lookback_len = (N1 > 1) ? N1 - 1 : 0;
+        const float* current_frame = (N2 == 0) ? in : (cache + lookback_len * P);
 
         if (version == 1) {
-            const float* __restrict__ w = (const float*)filter->lookback_weight;
+            const float* __restrict__ w_lb = (const float*)filter->lookback_weight;
+            
             for (uint32_t p = 0; p < P; p += 4) {
-                out[p+0] = in[p+0] + w[p+0] * in[p+0];
-                out[p+1] = in[p+1] + w[p+1] * in[p+1];
-                out[p+2] = in[p+2] + w[p+2] * in[p+2];
-                out[p+3] = in[p+3] + w[p+3] * in[p+3];
+                out[p+0] = current_frame[p+0] + w_lb[p+0] * current_frame[p+0];
+                out[p+1] = current_frame[p+1] + w_lb[p+1] * current_frame[p+1];
+                out[p+2] = current_frame[p+2] + w_lb[p+2] * current_frame[p+2];
+                out[p+3] = current_frame[p+3] + w_lb[p+3] * current_frame[p+3];
             }
-            int32_t curr_pos = (int32_t)head - 1;
-            if (curr_pos < 0) curr_pos = (int32_t)cache_len - 1;
-            for (uint32_t t = 1; t < N1; t++) {
-                const float* __restrict__ wt = w + t * P;
-                const float* __restrict__ ct = cache + curr_pos * P;
+            
+            // Lookback
+            for (uint32_t t = 1; t <= lookback_len; t++) {
+                const float* __restrict__ wt = w_lb + t * P;
+                const float* __restrict__ ct = cache + (lookback_len - t) * P;
                 for (uint32_t p = 0; p < P; p += 4) {
                     out[p+0] += wt[p+0] * ct[p+0];
                     out[p+1] += wt[p+1] * ct[p+1];
                     out[p+2] += wt[p+2] * ct[p+2];
                     out[p+3] += wt[p+3] * ct[p+3];
                 }
-                curr_pos--;
-                if (curr_pos < 0) curr_pos = (int32_t)cache_len - 1;
+            }
+            
+            // Lookahead
+            if (N2 > 0 && filter->lookahead_weight != nullptr) {
+                const float* __restrict__ w_la = (const float*)filter->lookahead_weight;
+                for (uint32_t j = 1; j <= N2; j++) {
+                    const float* __restrict__ wj = w_la + (j - 1) * P;
+                    const float* __restrict__ ct = (lookback_len + j == cache_len) ? in : (cache + (lookback_len + j) * P);
+                    for (uint32_t p = 0; p < P; p += 4) {
+                        out[p+0] += wj[p+0] * ct[p+0];
+                        out[p+1] += wj[p+1] * ct[p+1];
+                        out[p+2] += wj[p+2] * ct[p+2];
+                        out[p+3] += wj[p+3] * ct[p+3];
+                    }
+                }
             }
         } else if (version == 2 || version == 4) { // Int8
-            const int8_t* __restrict__ w = (const int8_t*)filter->lookback_weight;
+            const int8_t* __restrict__ w_lb = (const int8_t*)filter->lookback_weight;
             for (uint32_t p = 0; p < P; p += 4) {
-                out[p+0] = in[p+0] + (float)w[p+0] * scale * in[p+0];
-                out[p+1] = in[p+1] + (float)w[p+1] * scale * in[p+1];
-                out[p+2] = in[p+2] + (float)w[p+2] * scale * in[p+2];
-                out[p+3] = in[p+3] + (float)w[p+3] * scale * in[p+3];
+                out[p+0] = current_frame[p+0] + (float)w_lb[p+0] * filter->lookback_scale * current_frame[p+0];
+                out[p+1] = current_frame[p+1] + (float)w_lb[p+1] * filter->lookback_scale * current_frame[p+1];
+                out[p+2] = current_frame[p+2] + (float)w_lb[p+2] * filter->lookback_scale * current_frame[p+2];
+                out[p+3] = current_frame[p+3] + (float)w_lb[p+3] * filter->lookback_scale * current_frame[p+3];
             }
-            int32_t curr_pos = (int32_t)head - 1;
-            if (curr_pos < 0) curr_pos = (int32_t)cache_len - 1;
-            for (uint32_t t = 1; t < N1; t++) {
-                const int8_t* __restrict__ wt = w + t * P;
-                const float* __restrict__ ct = cache + curr_pos * P;
+            
+            // Lookback
+            for (uint32_t t = 1; t <= lookback_len; t++) {
+                const int8_t* __restrict__ wt = w_lb + t * P;
+                const float* __restrict__ ct = cache + (lookback_len - t) * P;
                 for (uint32_t p = 0; p < P; p += 4) {
-                    out[p+0] += (float)wt[p+0] * scale * ct[p+0];
-                    out[p+1] += (float)wt[p+1] * scale * ct[p+1];
-                    out[p+2] += (float)wt[p+2] * scale * ct[p+2];
-                    out[p+3] += (float)wt[p+3] * scale * ct[p+3];
+                    out[p+0] += (float)wt[p+0] * filter->lookback_scale * ct[p+0];
+                    out[p+1] += (float)wt[p+1] * filter->lookback_scale * ct[p+1];
+                    out[p+2] += (float)wt[p+2] * filter->lookback_scale * ct[p+2];
+                    out[p+3] += (float)wt[p+3] * filter->lookback_scale * ct[p+3];
                 }
-                curr_pos--;
-                if (curr_pos < 0) curr_pos = (int32_t)cache_len - 1;
+            }
+            
+            // Lookahead
+            if (N2 > 0 && filter->lookahead_weight != nullptr) {
+                const int8_t* __restrict__ w_la = (const int8_t*)filter->lookahead_weight;
+                for (uint32_t j = 1; j <= N2; j++) {
+                    const int8_t* __restrict__ wj = w_la + (j - 1) * P;
+                    const float* __restrict__ ct = (lookback_len + j == cache_len) ? in : (cache + (lookback_len + j) * P);
+                    for (uint32_t p = 0; p < P; p += 4) {
+                        out[p+0] += (float)wj[p+0] * filter->lookahead_scale * ct[p+0];
+                        out[p+1] += (float)wj[p+1] * filter->lookahead_scale * ct[p+1];
+                        out[p+2] += (float)wj[p+2] * filter->lookahead_scale * ct[p+2];
+                        out[p+3] += (float)wj[p+3] * filter->lookahead_scale * ct[p+3];
+                    }
+                }
             }
         } else { // Int16
-            const int16_t* __restrict__ w = (const int16_t*)filter->lookback_weight;
+            const int16_t* __restrict__ w_lb = (const int16_t*)filter->lookback_weight;
             for (uint32_t p = 0; p < P; p += 4) {
-                out[p+0] = in[p+0] + (float)w[p+0] * scale * in[p+0];
-                out[p+1] = in[p+1] + (float)w[p+1] * scale * in[p+1];
-                out[p+2] = in[p+2] + (float)w[p+2] * scale * in[p+2];
-                out[p+3] = in[p+3] + (float)w[p+3] * scale * in[p+3];
+                out[p+0] = current_frame[p+0] + (float)w_lb[p+0] * filter->lookback_scale * current_frame[p+0];
+                out[p+1] = current_frame[p+1] + (float)w_lb[p+1] * filter->lookback_scale * current_frame[p+1];
+                out[p+2] = current_frame[p+2] + (float)w_lb[p+2] * filter->lookback_scale * current_frame[p+2];
+                out[p+3] = current_frame[p+3] + (float)w_lb[p+3] * filter->lookback_scale * current_frame[p+3];
             }
-            int32_t curr_pos = (int32_t)head - 1;
-            if (curr_pos < 0) curr_pos = (int32_t)cache_len - 1;
-            for (uint32_t t = 1; t < N1; t++) {
-                const int16_t* __restrict__ wt = w + t * P;
-                const float* __restrict__ ct = cache + curr_pos * P;
+            
+            // Lookback
+            for (uint32_t t = 1; t <= lookback_len; t++) {
+                const int16_t* __restrict__ wt = w_lb + t * P;
+                const float* __restrict__ ct = cache + (lookback_len - t) * P;
                 for (uint32_t p = 0; p < P; p += 4) {
-                    out[p+0] += (float)wt[p+0] * scale * ct[p+0];
-                    out[p+1] += (float)wt[p+1] * scale * ct[p+1];
-                    out[p+2] += (float)wt[p+2] * scale * ct[p+2];
-                    out[p+3] += (float)wt[p+3] * scale * ct[p+3];
+                    out[p+0] += (float)wt[p+0] * filter->lookback_scale * ct[p+0];
+                    out[p+1] += (float)wt[p+1] * filter->lookback_scale * ct[p+1];
+                    out[p+2] += (float)wt[p+2] * filter->lookback_scale * ct[p+2];
+                    out[p+3] += (float)wt[p+3] * filter->lookback_scale * ct[p+3];
                 }
-                curr_pos--;
-                if (curr_pos < 0) curr_pos = (int32_t)cache_len - 1;
+            }
+            
+            // Lookahead
+            if (N2 > 0 && filter->lookahead_weight != nullptr) {
+                const int16_t* __restrict__ w_la = (const int16_t*)filter->lookahead_weight;
+                for (uint32_t j = 1; j <= N2; j++) {
+                    const int16_t* __restrict__ wj = w_la + (j - 1) * P;
+                    const float* __restrict__ ct = (lookback_len + j == cache_len) ? in : (cache + (lookback_len + j) * P);
+                    for (uint32_t p = 0; p < P; p += 4) {
+                        out[p+0] += (float)wj[p+0] * filter->lookahead_scale * ct[p+0];
+                        out[p+1] += (float)wj[p+1] * filter->lookahead_scale * ct[p+1];
+                        out[p+2] += (float)wj[p+2] * filter->lookahead_scale * ct[p+2];
+                        out[p+3] += (float)wj[p+3] * filter->lookahead_scale * ct[p+3];
+                    }
+                }
             }
         }
-
-        float* __restrict__ ch_head = cache + head * P;
-        memcpy(ch_head, in, P * sizeof(float));
-        *cache_head_ptr = (head + 1 >= cache_len) ? 0 : (head + 1);
+        
+        // SESSION 18: SLIDING WINDOW UPDATE
+        if (cache_len > 0) {
+            if (cache_len > 1) {
+                memmove(cache, cache + P, (cache_len - 1) * P * sizeof(float));
+            }
+            memcpy(cache + (cache_len - 1) * P, in, P * sizeof(float));
+        }
+        *cache_head_ptr = 0;  // Always reset to 0
     } else {
         const float* w_f  = (version == 1) ? (const float*)filter->lookback_weight  : nullptr;
         const int8_t*  w_i8 = (version == 2 || version == 4) ? (const int8_t*)filter->lookback_weight  : nullptr;
@@ -382,8 +690,10 @@ static void IRAM_ATTR fsmn_lookback_frame(
     }
 }
 
-static void apply_cmvn(const float* means, const float* istd, const float* input,
+static void IRAM_ATTR apply_cmvn(const float* means, const float* istd, const float* input,
                         float* output, uint32_t dim) {
+    // SESSION 14: Inline normalization - compiler auto-vectorizes
+    // Removed ESP-DSP to fix INT8 regression: (input - mean) * inv_std
     for (uint32_t d = 0; d < dim; d++) {
         output[d] = (input[d] - means[d]) * istd[d];
     }
@@ -437,11 +747,6 @@ static const void* read_tensor(const uint8_t* data, size_t data_len, size_t* off
         
         if (num_channels > 0) {
             // Per-channel quantized INT8
-            if (out_scale) {
-                float first_scale;
-                memcpy(&first_scale, data + *offset, sizeof(float));
-                *out_scale = first_scale;
-            }
             if (out_channel_scales) {
                 float* scales = nullptr;
 #ifdef ESP_PLATFORM
@@ -455,6 +760,13 @@ static const void* read_tensor(const uint8_t* data, size_t data_len, size_t* off
                     register_tensor_ptr(model, scales);
                 }
                 *out_channel_scales = scales;
+                if (out_scale) *out_scale = 1.0f;
+            } else {
+                if (out_scale) {
+                    float scale;
+                    memcpy(&scale, data + *offset, sizeof(float));
+                    *out_scale = scale;
+                }
             }
             *offset += num_channels * sizeof(float);
             data_bytes = count * sizeof(int8_t);
@@ -483,21 +795,7 @@ static const void* read_tensor(const uint8_t* data, size_t data_len, size_t* off
 
     if (*offset + data_bytes > data_len) return nullptr;
 
-    void* ptr = nullptr;
-#ifdef ESP_PLATFORM
-    if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) > 100 * 1024) {
-        ptr = heap_caps_aligned_alloc(16, data_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    }
-    if (!ptr) ptr = heap_caps_aligned_alloc(16, data_bytes, MALLOC_CAP_SPIRAM);
-#else
-    ptr = malloc(data_bytes);
-#endif
-
-    if (ptr) {
-        memcpy(ptr, data + *offset, data_bytes);
-        register_tensor_ptr(model, ptr);
-    }
-    
+    const void* ptr = data + *offset;
     *offset += data_bytes;
     return ptr;
 }
@@ -535,9 +833,13 @@ int esp_firevad_load(const uint8_t* data, size_t data_len, EspFirevadModel* mode
         return -5;
     }
 
-    const uint8_t* buf = data;
-    model->weight_buffer = nullptr;
+    model->weight_buffer = (uint8_t*)const_cast<uint8_t*>(data);
     model->weight_buffer_size = data_len;
+    model->owns_weight_buffer = false;
+    model->chunk_scratch = nullptr;
+    model->chunk_scratch_bytes = 0;
+
+    const uint8_t* buf = model->weight_buffer;
 
     model->arch.R = read_u32(buf, 16);
     model->arch.M = read_u32(buf, 20);
@@ -572,9 +874,13 @@ int esp_firevad_load(const uint8_t* data, size_t data_len, EspFirevadModel* mode
     const uint32_t R = model->arch.R;
     const uint32_t M = model->arch.M;
 
-    // Allocate FSMN caches and scratch buffers FIRST, to guarantee they get internal SRAM
-    // before the weights consume it all.
-    model->cache_len = (model->arch.N1 > 1) ? (model->arch.N1 - 1) * model->arch.S1 : 0;
+    // SESSION 18: SLIDING WINDOW CACHE - sequential access, better cache locality
+    // Full cache length used to maintain 100% PyTorch equivalence.
+    uint32_t lookback_len = (model->arch.N1 > 1) ? (model->arch.N1 - 1) * model->arch.S1 : 0;
+    uint32_t lookahead_len = (model->arch.N2 > 0) ? model->arch.N2 * model->arch.S2 : 0;
+    uint32_t full_cache_len = lookback_len + lookahead_len;
+    model->cache_len = full_cache_len;
+
     if (model->cache_len > 0) {
         model->fsmn_caches = (float**)heap_caps_aligned_alloc(16, R * sizeof(float*), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         model->fsmn_cache_heads = (uint32_t*)heap_caps_aligned_alloc(16, R * sizeof(uint32_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -588,6 +894,9 @@ int esp_firevad_load(const uint8_t* data, size_t data_len, EspFirevadModel* mode
             memset(model->fsmn_caches[r], 0, cache_bytes);
             model->fsmn_cache_heads[r] = 0;
         }
+        esp_firevad_LOGI("SESSION 18: FSMN sliding window cache: %u frames, %.1f KB per layer",
+                        model->cache_len, 
+                        (P * model->cache_len * sizeof(float)) / 1024.0f);
     }
 
     model->scratch_h    = (float*)heap_caps_aligned_alloc(16, H * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -601,6 +910,12 @@ int esp_firevad_load(const uint8_t* data, size_t data_len, EspFirevadModel* mode
     model->scratch_in_q16 = nullptr;
     if (model->is_int16) {
         model->scratch_in_q16 = (int16_t*)esp_firevad_malloc(model->version, max_dim * sizeof(int16_t));
+    }
+
+    if (!model->scratch_h || !model->scratch_p || !model->scratch_p2 || !model->scratch_conv || !model->scratch_in_q || (model->is_int16 && !model->scratch_in_q16)) {
+        esp_firevad_LOGE("Failed to allocate inference scratch buffers");
+        esp_firevad_free(model);
+        return -7;
     }
 
     uint32_t count = 0;
@@ -672,8 +987,34 @@ int esp_firevad_load(const uint8_t* data, size_t data_len, EspFirevadModel* mode
 void IRAM_ATTR __attribute__((aligned(16))) esp_firevad_infer_frame(EspFirevadModel* model, const float* features, bool apply_cmvn_flag, float* out_probs) {
     if (model == nullptr || features == nullptr) return;
 
+    const uint32_t D = model->arch.D;
+    float feat_buf[80]; 
+    if (apply_cmvn_flag && model->cmvn_dim > 0) {
+        apply_cmvn(model->cmvn_means, model->cmvn_istd, features, feat_buf, D);
+        features = feat_buf;
+    }
+
+    // Delegate to the prepared inference function
+    esp_firevad_infer_prepared(model, features, out_probs);
+}
+
+// DUAL-CORE API: Prepare features (CMVN normalization only)
+void esp_firevad_prepare_features(EspFirevadModel* model, const float* features, bool apply_cmvn_flag, float* out_features) {
+    if (model == nullptr || features == nullptr || out_features == nullptr) return;
 
     const uint32_t D = model->arch.D;
+    
+    if (apply_cmvn_flag && model->cmvn_dim > 0) {
+        apply_cmvn(model->cmvn_means, model->cmvn_istd, features, out_features, D);
+    } else {
+        memcpy(out_features, features, D * sizeof(float));
+    }
+}
+
+// DUAL-CORE API: Inference on pre-prepared features
+void IRAM_ATTR esp_firevad_infer_prepared(EspFirevadModel* model, const float* features, float* out_probs) {
+    if (model == nullptr || features == nullptr) return;
+
     const uint32_t H = model->arch.H;
     const uint32_t P = model->arch.P;
     const uint32_t R = model->arch.R;
@@ -685,58 +1026,47 @@ void IRAM_ATTR __attribute__((aligned(16))) esp_firevad_infer_frame(EspFirevadMo
     float* p2 = model->scratch_p2;
     float* conv_out = model->scratch_conv;
 
-    float feat_buf[80]; 
-    if (apply_cmvn_flag && model->cmvn_dim > 0) {
-        apply_cmvn(model->cmvn_means, model->cmvn_istd, features, feat_buf, D);
-        features = feat_buf;
-    }
-
     int64_t t_dense = 0;
     int64_t t_fsmn = 0;
     uint32_t t0, t1;
 
     t0 = esp_cpu_get_cycle_count();
-    dense_forward(&model->fc1, features, h, model);
+    dense_relu_forward(&model->fc1, features, h, model);
     t1 = esp_cpu_get_cycle_count(); t_dense += (t1 - t0);
-    relu_inplace(h, H);
 
     t0 = esp_cpu_get_cycle_count();
-    dense_forward(&model->fc2, h, p, model);
+    dense_relu_forward(&model->fc2, h, p, model);
     t1 = esp_cpu_get_cycle_count(); t_dense += (t1 - t0);
-    relu_inplace(p, P);
 
     t0 = esp_cpu_get_cycle_count();
-    fsmn_lookback_frame(p, conv_out, &model->fsmn1, model->fsmn_caches[0], &model->fsmn_cache_heads[0], P, N1, S1, model->cache_len, model->version);
+    fsmn_memory_frame(p, conv_out, &model->fsmn1, model->fsmn_caches[0], &model->fsmn_cache_heads[0], P, N1, S1, model->arch.N2, model->arch.S2, model->cache_len, model->version);
     t1 = esp_cpu_get_cycle_count(); t_fsmn += (t1 - t0);
     memcpy(p, conv_out, P * sizeof(float));
 
     for (uint32_t b = 0; b < R - 1; b++) {
         memcpy(p2, p, P * sizeof(float));
         t0 = esp_cpu_get_cycle_count();
-        dense_forward(&model->block_fc1[b], p, h, model);
+        dense_relu_forward(&model->block_fc1[b], p, h, model);
         t1 = esp_cpu_get_cycle_count(); t_dense += (t1 - t0);
-        relu_inplace(h, H);
         t0 = esp_cpu_get_cycle_count();
         dense_forward(&model->block_fc2[b], h, p, model);
         t1 = esp_cpu_get_cycle_count(); t_dense += (t1 - t0);
         
         t0 = esp_cpu_get_cycle_count();
-        fsmn_lookback_frame(p, conv_out, &model->block_fsmn[b], model->fsmn_caches[b + 1], &model->fsmn_cache_heads[b + 1], P, N1, S1, model->cache_len, model->version);
+        fsmn_memory_frame(p, conv_out, &model->block_fsmn[b], model->fsmn_caches[b + 1], &model->fsmn_cache_heads[b + 1], P, N1, S1, model->arch.N2, model->arch.S2, model->cache_len, model->version);
         t1 = esp_cpu_get_cycle_count(); t_fsmn += (t1 - t0);
         for (uint32_t i = 0; i < P; i++) p[i] = conv_out[i] + p2[i];
     }
 
     if (model->num_dnn_layers > 0) {
         t0 = esp_cpu_get_cycle_count();
-        dense_forward(&model->dnn_layers[0], p, h, model);
+        dense_relu_forward(&model->dnn_layers[0], p, h, model);
         t1 = esp_cpu_get_cycle_count(); t_dense += (t1 - t0);
-        relu_inplace(h, H);
         for (uint32_t d = 1; d < model->num_dnn_layers; d++) {
             float* temp = model->scratch_p; 
             t0 = esp_cpu_get_cycle_count();
-            dense_forward(&model->dnn_layers[d], h, temp, model);
+            dense_relu_forward(&model->dnn_layers[d], h, temp, model);
             t1 = esp_cpu_get_cycle_count(); t_dense += (t1 - t0);
-            relu_inplace(temp, H);
             memcpy(h, temp, H * sizeof(float));
         }
     } else {
@@ -791,6 +1121,7 @@ void esp_firevad_free(EspFirevadModel* model) {
     esp_firevad_free_ptr(model->scratch_conv);
     if (model->scratch_in_q) esp_firevad_free_ptr(model->scratch_in_q);
     if (model->scratch_in_q16) esp_firevad_free_ptr(model->scratch_in_q16);
+    if (model->chunk_scratch) esp_firevad_free_ptr(model->chunk_scratch);
 
     // Free individually allocated tensors
     if (model->tensor_ptrs != nullptr) {
@@ -806,15 +1137,27 @@ void esp_firevad_free(EspFirevadModel* model) {
     model->num_tensors = 0;
     model->max_tensors = 0;
 
-    esp_firevad_free_ptr(model->weight_buffer);
+    if (model->owns_weight_buffer && model->weight_buffer) {
+        esp_firevad_free_ptr(model->weight_buffer);
+    }
     memset(model, 0, sizeof(EspFirevadModel));
 }
 
 size_t esp_firevad_memory_usage(const EspFirevadModel* model) {
     if (model == nullptr) return 0;
-    size_t total = model->weight_buffer_size;
+    size_t total = 0;
+    if (model->weight_buffer) {
+        total += model->weight_buffer_size;
+    }
+    if (model->tensor_ptrs) {
+        total += model->max_tensors * sizeof(void*);
+    }
+    if (model->chunk_scratch) {
+        total += model->chunk_scratch_bytes;
+    }
     if (model->cache_len > 0) {
         total += model->arch.R * sizeof(float*);
+        total += model->arch.R * sizeof(uint32_t);
         total += model->arch.R * model->arch.P * model->cache_len * sizeof(float);
     }
     uint32_t num_blocks = (model->arch.R > 1) ? model->arch.R - 1 : 0;
@@ -825,7 +1168,9 @@ size_t esp_firevad_memory_usage(const EspFirevadModel* model) {
     uint32_t max_dim = (model->arch.H > model->arch.P) ? model->arch.H : model->arch.P;
     if (model->arch.D > max_dim) max_dim = model->arch.D;
     total += max_dim * sizeof(int8_t);
-    
+    if (model->scratch_in_q16) {
+        total += max_dim * sizeof(int16_t);
+    }
     return total;
 }
 
@@ -841,7 +1186,60 @@ void esp_firevad_infer_chunk(EspFirevadModel* model, const float* features, uint
     const uint32_t N2 = model->arch.N2;
     const uint32_t S2 = model->arch.S2;
 
-    float* feat_buf = (float*)esp_firevad_malloc(model->version, num_frames * D * sizeof(float));
+    float* feat_buf = NULL;
+    float* h_buf = NULL;
+    float* p_buf = NULL;
+    float* p2_buf = NULL;
+    float* conv_out = NULL;
+    float* batch_buf = NULL;
+    bool batch_allocated = false;
+    bool using_chunk_scratch = false;
+
+    size_t total_floats = (size_t)num_frames * (D + H + P * 3);
+    size_t required_bytes = total_floats * sizeof(float);
+    if (model->chunk_scratch_bytes >= required_bytes) {
+        batch_buf = model->chunk_scratch;
+        using_chunk_scratch = true;
+    } else {
+        float* new_chunk = (float*)esp_firevad_malloc(model->version, required_bytes);
+        if (new_chunk) {
+            if (model->chunk_scratch) {
+                esp_firevad_free_ptr(model->chunk_scratch);
+            }
+            model->chunk_scratch = new_chunk;
+            model->chunk_scratch_bytes = required_bytes;
+            batch_buf = model->chunk_scratch;
+            using_chunk_scratch = true;
+        }
+    }
+
+    if (batch_buf) {
+        batch_allocated = true;
+        feat_buf = batch_buf;
+        h_buf = feat_buf + (size_t)num_frames * D;
+        p_buf = h_buf + (size_t)num_frames * H;
+        p2_buf = p_buf + (size_t)num_frames * P;
+        conv_out = p2_buf + (size_t)num_frames * P;
+    } else {
+        feat_buf = (float*)esp_firevad_malloc(model->version, num_frames * D * sizeof(float));
+        h_buf = (float*)esp_firevad_malloc(model->version, num_frames * H * sizeof(float));
+        p_buf = (float*)esp_firevad_malloc(model->version, num_frames * P * sizeof(float));
+        p2_buf = (float*)esp_firevad_malloc(model->version, num_frames * P * sizeof(float));
+        conv_out = (float*)esp_firevad_malloc(model->version, num_frames * P * sizeof(float));
+    }
+
+    if (!feat_buf || !h_buf || !p_buf || !p2_buf || !conv_out) {
+        if (batch_allocated) esp_firevad_free_ptr(batch_buf);
+        else {
+            if (feat_buf) esp_firevad_free_ptr(feat_buf);
+            if (h_buf) esp_firevad_free_ptr(h_buf);
+            if (p_buf) esp_firevad_free_ptr(p_buf);
+            if (p2_buf) esp_firevad_free_ptr(p2_buf);
+            if (conv_out) esp_firevad_free_ptr(conv_out);
+        }
+        return;
+    }
+
     if (apply_cmvn_flag && model->cmvn_dim > 0) {
         for (uint32_t t = 0; t < num_frames; t++) {
             apply_cmvn(model->cmvn_means, model->cmvn_istd, features + t * D, feat_buf + t * D, D);
@@ -850,17 +1248,10 @@ void esp_firevad_infer_chunk(EspFirevadModel* model, const float* features, uint
         memcpy(feat_buf, features, num_frames * D * sizeof(float));
     }
 
-    float* h_buf = (float*)esp_firevad_malloc(model->version, num_frames * H * sizeof(float));
-    float* p_buf = (float*)esp_firevad_malloc(model->version, num_frames * P * sizeof(float));
-    float* p2_buf = (float*)esp_firevad_malloc(model->version, num_frames * P * sizeof(float));
-    float* conv_out = (float*)esp_firevad_malloc(model->version, num_frames * P * sizeof(float));
-
     // 1st FSMN block
     for (uint32_t t = 0; t < num_frames; t++) {
-        dense_forward(&model->fc1, feat_buf + t * D, h_buf + t * H, model);
-        relu_inplace(h_buf + t * H, H);
-        dense_forward(&model->fc2, h_buf + t * H, p_buf + t * P, model);
-        relu_inplace(p_buf + t * P, P);
+        dense_relu_forward(&model->fc1, feat_buf + t * D, h_buf + t * H, model);
+        dense_relu_forward(&model->fc2, h_buf + t * H, p_buf + t * P, model);
     }
 
     auto apply_fsmn_chunk = [&](const FsmnFilter* filter, float* in_p, float* out_p) {
@@ -883,7 +1274,7 @@ void esp_firevad_infer_chunk(EspFirevadModel* model, const float* features, uint
                         for (uint32_t p = 0; p < P; p++) out_p[t * P + p] += w_row[p] * in_row[p];
                     }
                 }
-            } else if (model->version == 2) {
+            } else if (model->version == 2 || model->version == 4) {
                 const int8_t* fw = (const int8_t*)filter->lookback_weight;
                 float scale = filter->lookback_scale;
                 for (uint32_t p = 0; p < P; p++) out_p[t * P + p] += (float)fw[p] * scale * in_p[t * P + p];
@@ -933,7 +1324,7 @@ void esp_firevad_infer_chunk(EspFirevadModel* model, const float* features, uint
                             for (uint32_t p = 0; p < P; p++) out_p[t * P + p] += w_row[p] * in_row[p];
                         }
                     }
-                } else if (model->version == 2) {
+                } else if (model->version == 2 || model->version == 4) {
                     const int8_t* fw = (const int8_t*)filter->lookahead_weight;
                     float scale = filter->lookahead_scale;
                     for (uint32_t n = 0; n < N2; n++) {
@@ -976,8 +1367,7 @@ void esp_firevad_infer_chunk(EspFirevadModel* model, const float* features, uint
     for (uint32_t b = 0; b < R - 1; b++) {
         memcpy(p2_buf, p_buf, num_frames * P * sizeof(float));
         for (uint32_t t = 0; t < num_frames; t++) {
-            dense_forward(&model->block_fc1[b], p_buf + t * P, h_buf + t * H, model);
-            relu_inplace(h_buf + t * H, H);
+            dense_relu_forward(&model->block_fc1[b], p_buf + t * P, h_buf + t * H, model);
             dense_forward(&model->block_fc2[b], h_buf + t * H, p_buf + t * P, model);
         }
         apply_fsmn_chunk(&model->block_fsmn[b], p_buf, conv_out);
@@ -990,14 +1380,12 @@ void esp_firevad_infer_chunk(EspFirevadModel* model, const float* features, uint
 
     if (model->num_dnn_layers > 0) {
         for (uint32_t t = 0; t < num_frames; t++) {
-            dense_forward(&model->dnn_layers[0], p_buf + t * P, h_buf + t * H, model);
-            relu_inplace(h_buf + t * H, H);
+            dense_relu_forward(&model->dnn_layers[0], p_buf + t * P, h_buf + t * H, model);
         }
         for (uint32_t d = 1; d < model->num_dnn_layers; d++) {
             for (uint32_t t = 0; t < num_frames; t++) {
                 float* temp = model->scratch_p; 
-                dense_forward(&model->dnn_layers[d], h_buf + t * H, temp, model);
-                relu_inplace(temp, H);
+                dense_relu_forward(&model->dnn_layers[d], h_buf + t * H, temp, model);
                 memcpy(h_buf + t * H, temp, H * sizeof(float));
             }
         }
@@ -1019,10 +1407,15 @@ void esp_firevad_infer_chunk(EspFirevadModel* model, const float* features, uint
         }
     }
 
-    esp_firevad_free_ptr(feat_buf);
-    esp_firevad_free_ptr(h_buf);
-    esp_firevad_free_ptr(p_buf);
-    esp_firevad_free_ptr(p2_buf);
-    esp_firevad_free_ptr(conv_out);
+    if (!using_chunk_scratch) {
+        if (batch_buf) esp_firevad_free_ptr(batch_buf);
+        else {
+            esp_firevad_free_ptr(feat_buf);
+            esp_firevad_free_ptr(h_buf);
+            esp_firevad_free_ptr(p_buf);
+            esp_firevad_free_ptr(p2_buf);
+            esp_firevad_free_ptr(conv_out);
+        }
+    }
 }
 

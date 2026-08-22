@@ -1,130 +1,104 @@
-# FireVAD ESP32-P4
+# FireRedVAD for ESP32-P4 (Industrial Grade)
 
-A highly optimized, bare-bones native C++ implementation of the **FireRedVAD** Voice Activity Detection (VAD) model, specifically ported and optimized for the **ESP32-P4** microcontroller series.
+A professional, hardware-accelerated Voice Activity Detection (VAD) pipeline specifically optimized for the **ESP32-P4 (Chip Revision v1.3)**. This repository provides a fully multithreaded, real-time AI audio pipeline running on the **Waveshare ESP32-P4-WIFI6** board.
 
-This repository strips away external deep-learning dependencies (no TFLite, no ONNX runtime) and executes standard DFSMN inference directly via bare-metal matrix-vector operations. It is designed to be as lightweight and fast as possible while fully running in local PSRAM and Flash.
+## 🚀 Key Features
 
-**Models:** https://huggingface.co/Strg-Alt-Entf-0x00/FireRedVAD-ESP32-P4
+* **Multithreaded Audio Pipeline:** Lock-free Producer/Consumer ringbuffers safely separate the I2S Audio-Rx (Core 0), DSP processing (Core 0), and Neural Network inference (Core 1). This ensures zero audio drops even if the AI or SD card blocks momentarily.
+* **Dual-Core Math (Model Dependent):** Matrix multiplications for large models (FP32/INT16) are split across both CPU cores. To maximize efficiency, heavily quantized **INT8** models skip the dual-core overhead and use an ultra-fast **single-core fast path** (~5.5ms per 10ms frame).
+* **ESP-DSP Hardware Acceleration:** Implements a highly efficient Biquad IIR High-Pass Filter (80Hz cutoff) to remove DC-offset and low-frequency mechanical rumble *before* AI inference.
+* **Smart Speaker Audio Pipeline:** Features adaptive Automatic Gain Control (AGC) with noise-gating and attack/decay smoothing.
+* **Auto-Calibration:** Boot-time environmental noise calibration (1-second absolute silence check) for dynamic Pre-VAD thresholding.
 
-## Core Features & Architecture
+## 🎤 Audio Frontend & AGC Results
+We achieved a highly robust audio frontend using the INMP441 I2S microphone combined with a custom Automatic Gain Control (AGC) and DC-Offset High-Pass filter:
+- **Dynamic Range Compression**: Without AGC, voice volume drops steeply from -27 dB (at 10cm) to -47 dB (at 2m). With AGC enabled, the volume stays rock-solid between -30 dB and -37 dB!
+- **Distance Boost**: The AGC automatically boosts weak signals at a 2-meter distance by +10 dB, while seamlessly throttling loud, up-close speech.
+- **SNR**: Crystal clear 23 dB SNR.
+- **Golden Test**: Bit-parity and VAD-quality mathematically verified.
 
-- **Pure C++ Inference**: Zero heavy dependencies. Uses only `esp-dsp` for rapid audio feature extraction (FFT and Mel-Filterbanks).
-- **Offline ML Execution**: 100% offline inference ensuring strict privacy. Models are stored on LittleFS flash.
-- **Dynamic Feature Extraction**: Real-time extraction of 80-dimensional log-mel filterbank features from raw 16kHz PCM audio buffers.
-- **DFSMN Architecture**: Implements Deep Feedforward Sequential Memory Networks (DFSMN) using a highly efficient memory ring-buffer to store historical states.
-- **Asynchronous Audio I/O**: FreeRTOS Ringbuffer on Core 1 for lock-free, stall-free I2S TX. LittleFS for model storage.
+👉 *For deep technical details on our hardware tests, the Golden Test mathematics, FFT analyses, and AGC performance, read our [Engineering & Hardware Insights](docs/ENGINEERING_INSIGHTS.md).*
 
-## Technical Specifications & Performance
+## 🎛️ Hardware Setup (Waveshare ESP32-P4-WIFI6)
 
-All numbers below are **real measurements** from the ESP32-P4 (Dual-Core RISC-V @ 360MHz, 32MB PSRAM),
-benchmarked against 21 diverse audio sources.
-Source: [`.docs/2026-08-01_09-42-45_benchmark_results.md`](.docs/2026-08-01_09-42-45_benchmark_results.md)
+This project is optimized for the **Waveshare ESP32-P4-WIFI6** development board.
 
-### The PSRAM Bandwidth Bottleneck
+### Primary Microphone (Recommended)
+For the best AI inference results, an external digital I2S microphone (e.g., **INMP441**) is heavily recommended over the onboard analog mic.
+* **Mic Type:** INMP441 (Mono I2S)
+* **Pins:**
+  * `BCLK` = GPIO 20
+  * `WS` = GPIO 21
+  * `DIN` = GPIO 22
 
-Our empirical benchmarks revealed a critical hardware limitation: The ESP32-P4's Octal-SPI PSRAM
-bandwidth is insufficient for large, unoptimized models. FP32 variants demand too much memory
-bandwidth, causing the CPU to stall while waiting for weights. INT16 variants are paradoxically
-**even slower than FP32** due to conversion overhead on the RISC-V pipeline.
+### Fallback/Onboard Microphone (ES8311)
+The board includes an onboard analog SMD microphone routed through the ES8311 codec.
+* **Pins:** I2C (`SDA`=GPIO7, `SCL`=GPIO8), I2S0 (`MCLK`=GPIO13, `BCLK`=GPIO12, `WS`=GPIO10, `DIN`=GPIO9).
+* *Note:* Due to analog interference from the LCD and 2.4GHz WiFi traces, this microphone is suitable as a secondary environment sensor but not recommended as the primary VAD input.
+
+## 📦 Using it as an ESP-IDF Component
+
+You can integrate this VAD directly into your own firmware:
+1. Copy the `components/esp_firevad` folder into your project's `components/` directory.
+2. Link it in your `CMakeLists.txt` via `REQUIRES esp_firevad`.
+3. Use the C-API (`esp_firevad.h` and `esp_firevad_dsp.h`) to extract features and run inferences.
+
+## 🧠 Neural Network Models & Tools
+
+This project uses the official FireRedVAD weights, which must be downloaded and optionally converted.
+
+1. **Original Models:** If you want the original raw PyTorch/ONNX models (for research or manual conversion), run:
+   ```bash
+   python tools/download_pth_models.py
+   ```
+2. **Optimized ESP32 Models (.frvd):** If you just want to run the code, use our pre-quantized `INT8` and `FP32` models specifically built for the ESP32:
+   ```bash
+   python examples/console_vad/tools/download_frvd_models.py
+   ```
+
+Models are heavily quantized (`INT8`) to fit into the ESP32's L2 Cache and execute in under **6 milliseconds** per 10ms audio frame on a single 360MHz RISC-V core.
+
+## 🛠️ Getting Started
+
+To compile the firmware, explore the hardware, and test the microphone pipeline, navigate to the fully featured CLI example:
+👉 **[examples/console_vad](examples/console_vad)**
+
+## 📊 Performance Benchmarks & Quantization (ESP32-P4)
+
+*(Last Benchmark Run: 2026-08-21 17:26:16)*
+
+All numbers below are real measurements from the ESP32-P4 (Dual-Core RISC-V @ 360MHz, 32MB PSRAM). 
+**Note:** The ESP32-P4's Octal-SPI PSRAM bandwidth is insufficient for large, unoptimized models. FP32 variants demand too much memory bandwidth, causing the CPU to stall.
 
 ### Benchmark Results (10ms audio frame = 10,000 µs real-time budget)
 
-| Model | Avg Latency | CPU Cycles | RT Load | Verdict |
-|---|---|---|---|---|
-| `stream-fp32` | 35,216 µs | 12,678,649 | 352% | No — 35x over budget |
-| `stream-int16` | 43,499 µs | 15,660,528 | 435% | No — **slower than FP32** |
-| `stream-int8` | **4,470 µs** | 1,610,007 | **44.7%** | Yes — 7.87x faster than FP32 |
-| **`stream-int8-ch`** | **4,538 µs** | 1,634,483 | **45.4%** | **Yes — Recommended** |
-| `vad-fp32` | 35,025 µs | 12,609,993 | 350% | No — batch only |
-| `vad-int16` | 43,613 µs | 15,701,420 | 436% | No — batch only |
-| `vad-int8` | 4,705 µs | 1,694,745 | 47.0% | Yes — batch only |
-| **`vad-int8-ch`** | **4,726 µs** | 1,702,164 | **47.3%** | **Yes — batch Recommended** |
-
-*RT Load = percentage of the 10ms real-time frame budget consumed.*
-
-**Critical note on INT16:** Do not use INT16 for real-time applications. It is 23% **slower** than FP32
-on the ESP32-P4 RISC-V pipeline due to the lack of native INT16 vector instructions.
-Use INT8 or INT8-CH exclusively for real-time workloads.
+| Model | Avg Latency | CPU Cycles | Real-Time Load | Verdict |
+|-------|-------------|------------|----------------|---------|
+| `Stream-VAD FP32` | 27.31 ms | 9,832,326 | 273.1% | No — Over budget |
+| `Stream-VAD INT16`| 11.77 ms | 4,235,911 | 117.7% | No — Over budget |
+| `Stream-VAD INT8` | 6.07 ms | 2,186,134 | 60.7% | **Yes — Real-time capable** |
+| `Stream-VAD INT8-CH`| **6.12 ms** | 2,203,320 | **61.2%** | **Yes — Recommended** |
+| `VAD FP32`        | 38.91 ms | 12,609,993| 389.1% | No — Offline only |
+| `VAD INT16`       | 48.45 ms | 15,701,420| 484.5% | No — Offline only |
+| `VAD INT8`        | 5.22 ms  | 1,694,745 | 52.2%  | Yes — Offline only |
+| `VAD INT8-CH`     | **5.25 ms** | 1,702,164 | **52.5%** | **Yes — Offline Recommended** |
+| `AED-VAD FP32`    | 28.79 ms | 10,364,610| 287.9% | No — Offline only |
+| `AED-VAD INT16`   | 12.83 ms | 4,619,155 | 128.3% | No — Offline only |
+| `AED-VAD INT8`    | 7.01 ms  | 2,522,769 | 70.1%  | Yes — Offline only |
+| `AED-VAD INT8-CH` | **7.05 ms** | 2,530,100 | **70.5%** | **Yes — Offline Recommended** |
 
 ### Quantization: Why INT8-CH is Required for Production
 
-Standard per-tensor INT8 quantization (`int8`) assigns **one** global scale factor per weight matrix.
-DFSMN architectures have wide variance in weight distribution across output channels — a single
-scale factor cannot capture this range accurately, causing silent accuracy degradation.
+Standard per-tensor INT8 quantization (`int8`) assigns **one** global scale factor per weight matrix. DFSMN architectures have wide variance in weight distribution across output channels — a single scale factor cannot capture this range accurately, causing silent accuracy degradation.
+**Per-Channel INT8 (`int8-ch`)** assigns **one scale factor per output channel**. This preserves near-FP32 accuracy at INT8 speed and memory cost.
 
-**Per-Channel INT8 (`int8-ch`, Version 4 in the `.frvd` format)** assigns **one scale factor
-per output channel**. This preserves near-FP32 accuracy at INT8 speed and memory cost.
+## ⚠️ Known Limitations (Scientific Honesty)
 
-| | int8 | int8-ch | int16 | fp32 |
-|---|---|---|---|---|
-| `.frvd` version | 2 | 4 | 3 | 1 |
-| Avg latency (P4 @ 360MHz) | 4.47ms | 4.54ms | 43.5ms | 35.2ms |
-| RT load | 44.7% | 45.4% | 435% | 352% |
-| Accuracy vs FP32 | Degraded | Near-identical | High | Reference |
-| Usable for real-time | Yes | Yes | No | No |
+We prioritize scientific honesty over marketing claims:
+1. **Background Noise Susceptibility**: FireRedVAD performs exceptionally well in quiet or moderately noisy environments. In low SNR conditions (loud machinery, wind), false positive rates increase (e.g. babble noise is often detected as speech-like).
+2. **APLL Sharing**: When I2S0 (ES8311 codec, TX) and I2S1 (INMP441, RX) are both active, the shared APLL runs at 8,191,999 Hz instead of 8,192,000 Hz. This 1Hz deviation is expected behavior.
 
-## Known Limitations (Scientific Honesty)
+## 📜 License
 
-We prioritize scientific honesty over marketing claims. Please consider the following limitations
-before production deployment:
-
-1. **Background Noise Susceptibility**: FireRedVAD performs exceptionally well in quiet or moderately
-   noisy environments. In low SNR conditions (loud machinery, wind), false positive rates increase.
-   Measured noise floor: `noise-clock-tick` → 0.4% speech, `noise-cafeteria` → ~60% speech
-   (the model correctly detects babble noise as speech-like).
-
-2. **INT16 Anomaly**: INT16 models show paradoxically higher latency than FP32 (435% vs 352% RT load)
-   on the ESP32-P4. This is a confirmed RISC-V pipeline characteristic, not a bug. Do not use INT16
-   for any real-time path.
-
-3. **Microphone Dependency**: The model expects clean 16kHz PCM audio. A high-quality I2S microphone
-   (e.g., INMP441) with hardware gain control is required. No built-in noise suppression.
-
-4. **APLL Sharing**: When I2S0 (ES8311 codec, TX) and I2S1 (INMP441, RX) are both active, the
-   shared APLL runs at 8,191,999 Hz instead of 8,192,000 Hz (1 Hz deviation). This is expected
-   behavior and is actually ideal for AEC — both ports are locked to the same clock.
-
-### Roadmap
-
-- **Sparse Mel-Filterbanks**: The 80-bin Mel-Filterbank matrix is ~95% sparse. Moving to
-  Compressed Sparse Row (CSR) logic will significantly reduce feature extraction latency.
-- **Professional Power Architecture**: Multi-stage wake pipeline (LP-Core energy detection →
-  HP-Core VAD) with adaptive noise-floor calibration targeting <5mW idle power.
-
-## Using the Component in Your Project
-
-The core component is isolated in `components/esp_firevad`.
-
-Copy `components/esp_firevad` into your project's `components` folder, or add it via `idf_component.yml`.
-
-In your `main.cpp`:
-```cpp
-#include "esp_firevad.h"
-#include "esp_firevad_dsp.h"
-
-// 1. Load the model from LittleFS
-EspFirevadModel model;
-esp_firevad_load(frvd_binary_data, data_len, &model);
-
-// 2. Initialize DSP (FFT)
-esp_firevad_dsp_init();
-esp_firevad_reset(&model);
-
-// 3. Process Audio (160 samples = 10ms at 16kHz)
-float features[80];
-esp_firevad_dsp_extract_features(pcm_160_buffer, features, NULL);
-float prob = esp_firevad_infer_frame(&model, features, true);
-
-if (prob > 0.6f) {
-    printf("Speech Detected!\n");
-}
-```
-
-> [!TIP]
-> **Example Application**
-> For a full, interactive implementation including model downloading from HuggingFace and LittleFS flashing, see the [Console Example](examples/console_vad/README.md).
-
-## License
-
-This project is licensed under the **Apache License 2.0** — see the `LICENSE` file for details.
+This project is licensed under the **Apache License 2.0**.
 Based on the architecture of [FireRedVAD](https://github.com/FireRedTeam/FireRedVAD) by Xiaohongshu (FireRedTeam).

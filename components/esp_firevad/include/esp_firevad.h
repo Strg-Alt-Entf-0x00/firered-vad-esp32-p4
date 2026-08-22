@@ -101,6 +101,7 @@ struct EspFirevadModel {
     // Raw weight buffer (allocated in PSRAM)
     uint8_t* weight_buffer;
     size_t weight_buffer_size;
+    bool owns_weight_buffer;
 
     void** tensor_ptrs;
     uint32_t num_tensors;
@@ -113,6 +114,8 @@ struct EspFirevadModel {
     float* scratch_conv; // [P] for conv output
     int8_t* scratch_in_q; // [max(H, P)] for Int8 dynamic quant
     int16_t* scratch_in_q16; // [max(H, P)] for Int16 dynamic quant
+    float* chunk_scratch; // reusable scratch area for infer_chunk
+    size_t chunk_scratch_bytes;
 };
 
 // ---- Public API ----
@@ -141,6 +144,28 @@ int esp_firevad_load(const uint8_t* data, size_t data_len, EspFirevadModel* mode
  * @param out_probs   Output array of size `odim`.
  */
 void esp_firevad_infer_frame(EspFirevadModel* model, const float* features, bool apply_cmvn, float* out_probs);
+
+/**
+ * DUAL-CORE API: Extract features only (for Core 0)
+ * Separates feature extraction from inference for dual-core parallelization.
+ * 
+ * @param model       Loaded model (for CMVN parameters)
+ * @param features    Input features [D] (80 floats)
+ * @param apply_cmvn  If true, apply CMVN normalization
+ * @param out_features Output normalized features [D]
+ */
+void esp_firevad_prepare_features(EspFirevadModel* model, const float* features, bool apply_cmvn, float* out_features);
+
+/**
+ * DUAL-CORE API: Run inference on pre-extracted features (for Core 1)
+ * This performs the dense layers + FSMN computation only.
+ * Features must already be extracted and normalized.
+ * 
+ * @param model       Loaded model
+ * @param features    Pre-extracted features [D] (80 floats, already normalized)
+ * @param out_probs   Output array of size `odim`
+ */
+void esp_firevad_infer_prepared(EspFirevadModel* model, const float* features, float* out_probs);
 
 /**
  * Run inference on a full chunk of 80-dim log-mel features.

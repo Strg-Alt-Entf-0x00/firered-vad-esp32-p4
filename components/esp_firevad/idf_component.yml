@@ -1,2 +1,4 @@
 dependencies:
-  espressif/esp-dsp: "^1.4.9"
+  espressif/esp-dsp: "~1.8.2"  # State-of-the-art with ESP32-P4 PIE V2 support
+  espressif/esp-nn: "~1.2.5"   # Neural network primitives with PIE V2
+

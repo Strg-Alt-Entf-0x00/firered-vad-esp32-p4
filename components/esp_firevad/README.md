@@ -7,7 +7,7 @@ FireRedVAD Native C++ Inference Engine for ESP32-P4 with Int8/Int16/FP32 quantiz
 - DFSMN (Deep Feedforward Sequential Memory Network) inference
 - Streaming and offline VAD modes
 - Hardware-accelerated Int8 operations using ESP32-P4 PIE
-- Optimized for low latency (~7ms per 10ms frame)
+- Optimized for ultra-low latency (~6.1ms per 10ms frame)
 - PSRAM-friendly weight storage
 
 ## Configuration
@@ -91,11 +91,11 @@ if (prob > 0.6f) {
 }
 ```
 
-## Performance
+## Performance (ESP32-P4 @ 360MHz)
 
-- **Dense layer:** ~2.1ms
-- **FSMN layer:** ~5.0ms  
-- **Total:** ~7.1ms per frame (70% CPU load @ 360MHz)
+- **Dense layer processing:** ~2.1 ms
+- **FSMN layer processing:** ~4.0 ms  
+- **Total INT8 Inference:** ~6.1 ms per frame (61% CPU load)
 
 ## License
 

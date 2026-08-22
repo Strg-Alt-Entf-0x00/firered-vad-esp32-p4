@@ -8,6 +8,7 @@
 #ifdef ESP_PLATFORM
 #include "esp_log.h"
 #include "esp_cpu.h"
+#include "esp_attr.h"
 static const char* TAG = "ESP_FIREVAD_DSP";
 #endif
 
@@ -27,37 +28,79 @@ esp_err_t esp_firevad_dsp_init(void) {
 #define DSP_IRAM_ATTR
 #endif
 
+static inline float fast_log_mel_energy(float energy) {
+    if (energy < 1e-6f) return -13.815510557964274f;
+
+    uint32_t ux;
+    memcpy(&ux, &energy, sizeof(ux));
+    int32_t iexp = (int32_t)(ux >> 23) - 127;
+    ux = (ux & 0x007FFFFFu) | 0x3F800000u;
+    float mf;
+    memcpy(&mf, &ux, sizeof(mf));
+
+    float tk = (mf - 1.0f) / (mf + 1.0f);
+    float tk2 = tk * tk;
+    float ln_m = tk * (2.0f + tk2 * (0.666667f + tk2 * (0.4f + tk2 * 0.285714f)));
+    return ln_m + (float)iexp * 0.693147180f;
+}
+
+static DRAM_ATTR float window_buffer[400] = {0};
+static DRAM_ATTR float fft_buf[512 * 2] = {0};
+static float prev_samp = 0.0f;
+
+void esp_firevad_dsp_reset(void) {
+    memset(window_buffer, 0, sizeof(window_buffer));
+    memset(fft_buf, 0, sizeof(fft_buf));
+    prev_samp = 0.0f;
+}
+
 void DSP_IRAM_ATTR esp_firevad_dsp_extract_features(const int16_t* pcm_160, float* features_80, float* out_energy) {
-    static float window_buffer[400] = {0};
     memmove(window_buffer, window_buffer + 160, (400 - 160) * sizeof(float));
-    static float dc_offset = 0.0f;
     float total_sq = 0.0f;
 
 #ifdef ESP_PLATFORM
     uint32_t t0 = esp_cpu_get_cycle_count();
 #endif
 
+    // 1. Append raw PCM samples to window buffer
     for (int i = 0; i < 160; i++) {
         float raw = (float)pcm_160[i];
-        dc_offset = dc_offset * 0.995f + raw * 0.005f;
-        float s = raw - dc_offset;
-        if (s > 32767.0f) s = 32767.0f;
-        if (s < -32768.0f) s = -32768.0f;
-        window_buffer[240 + i] = s;
-        total_sq += s * s;
+        if (raw > 32767.0f) raw = 32767.0f;
+        if (raw < -32768.0f) raw = -32768.0f;
+        window_buffer[240 + i] = raw;
+        total_sq += raw * raw;
     }
 
     if (out_energy) {
         *out_energy = sqrtf(total_sq / 160.0f);
     }
 
-    // OPT: fft_buf is static — only zero the zero-padded tail [400..511].
-    //      The signal region [0..399] is fully overwritten in the loop below,
-    //      so no need to zero the entire 4096-byte buffer each frame.
-    static float fft_buf[512 * 2];
-    memset(&fft_buf[800], 0, 224 * sizeof(float));
+    // 2. Compute frame mean (Kaldi remove_dc_offset)
+    float frame_mean = 0.0f;
     for (int i = 0; i < 400; i++) {
-        fft_buf[i * 2]     = window_buffer[i] * KALDI_WINDOW[i];
+        frame_mean += window_buffer[i];
+    }
+    frame_mean /= 400.0f;
+
+    memset(&fft_buf[800], 0, 224 * sizeof(float));
+    
+    // For pre-emphasis, we need the (i-1) sample. 
+    // For i=0, we should ideally use the sample before the window, 
+    // but in Kaldi, preemphasis is often applied after DC removal,
+    // and the first sample uses itself or 0.
+    // Torchaudio kaldi.fbank uses: signal[i] = signal[i] - preemph * signal[i-1]
+    // where signal[0] = signal[0] - preemph * signal[0] 
+    
+    // prev_samp is maintained across chunks for continuous preemphasis
+    if (prev_samp == 0.0f) {
+        prev_samp = window_buffer[0] - frame_mean;
+    }
+    for (int i = 0; i < 400; i++) {
+        float curr_samp = window_buffer[i] - frame_mean;
+        float preemph_samp = curr_samp - 0.97f * prev_samp;
+        prev_samp = curr_samp;
+        
+        fft_buf[i * 2]     = preemph_samp * KALDI_WINDOW[i];
         fft_buf[i * 2 + 1] = 0.0f;
     }
 
@@ -72,36 +115,25 @@ void DSP_IRAM_ATTR esp_firevad_dsp_extract_features(const int16_t* pcm_160, floa
     uint32_t t2 = esp_cpu_get_cycle_count();
 #endif
 
-    static float power_spectrum[257];
+    static DRAM_ATTR float power_spectrum[257];
     for (int i = 0; i < 257; i++) {
         float re = fft_buf[i * 2];
         float im = fft_buf[i * 2 + 1];
         power_spectrum[i] = re * re + im * im;
     }
 
-    // OPT: fast_logf — polynomial approximation via Atanh series on mantissa.
-    //      Max error ~2e-5 relative. For VAD mel features, numerically identical
-    //      to libm logf but saves ~10x cycles vs software transcendental.
     for (int m = 0; m < 80; m++) {
-        float mel_energy = 0.0f;
-        uint8_t  cnt = KALDI_MEL_COUNTS[m];
-        uint16_t off = KALDI_MEL_OFFSETS[m];
-        for (int i = 0; i < cnt; i++) {
-            mel_energy += power_spectrum[KALDI_MEL_INDICES[off + i]]
-                        * KALDI_MEL_WEIGHTS[off + i];
-        }
-        if (mel_energy < 1e-6f) mel_energy = 1e-6f;
+        const uint8_t cnt = KALDI_MEL_COUNTS[m];
+        const uint16_t off = KALDI_MEL_OFFSETS[m];
+        const uint16_t* idx_ptr = KALDI_MEL_INDICES + off;
+        const float* weight_ptr = KALDI_MEL_WEIGHTS + off;
 
-        // IEEE 754 exponent extraction + polynomial on mantissa in [1, 2)
-        uint32_t ux; memcpy(&ux, &mel_energy, 4);
-        int32_t  iexp = (int32_t)(ux >> 23) - 127;
-        ux = (ux & 0x007FFFFFu) | 0x3F800000u;
-        float mf; memcpy(&mf, &ux, 4);
-        // Atanh series: ln(m) = 2*atanh((m-1)/(m+1))
-        float tk  = (mf - 1.0f) / (mf + 1.0f);
-        float tk2 = tk * tk;
-        float ln_m = tk * (2.0f + tk2 * (0.666667f + tk2 * (0.4f + tk2 * 0.285714f)));
-        features_80[m] = ln_m + (float)iexp * 0.693147180f;
+        float mel_energy = 0.0f;
+        for (int i = 0; i < cnt; i++) {
+            mel_energy += power_spectrum[idx_ptr[i]] * weight_ptr[i];
+        }
+
+        features_80[m] = fast_log_mel_energy(mel_energy);
     }
 
 #ifdef ESP_PLATFORM

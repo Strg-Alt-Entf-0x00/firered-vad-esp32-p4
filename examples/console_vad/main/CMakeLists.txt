@@ -1,17 +1,23 @@
 idf_component_register(
-    SRCS "main.cpp" "cmd_vad_cli.cpp" "vad_runner.cpp" "metrics.cpp" "audio_manager.cpp"
+    SRCS "main.cpp" "cmd_vad_cli.cpp"
     INCLUDE_DIRS "."
     REQUIRES 
         esp_firevad
+        vad_app
         console
         nvs_flash
-        joltwallet__littlefs
-        espressif__esp_codec_dev  # For audio codec support
+        espressif__esp_codec_dev
+        file_protocol
+        filesystem_manager
     PRIV_REQUIRES
-        driver                    # Legacy driver component (transitional)
-        esp_driver_gpio           # New GPIO driver (ESP-IDF v6.0+)
-        esp_driver_i2c            # New I2C master driver (ESP-IDF v6.0+)
+        driver
+        esp_driver_gpio
+        esp_driver_i2c
+        esp_driver_uart
         esp_driver_i2s            # New I2S STD/PDM/TDM driver (ESP-IDF v6.0+)
+        esp_driver_sdmmc          # SDMMC host driver for SD card
+        sdmmc                     # SD/MMC protocol driver
+        fatfs                     # FAT filesystem for SD card
         esp_timer
         esp_pm
         esp_ringbuf
