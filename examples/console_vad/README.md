@@ -22,9 +22,10 @@ cd tools
 python download_frvd_models.py
 ```
 2. Build and flash the firmware (see step 2) and leave the ESP32 running.
-3. Run the uploader to push the models over Serial to the SD Card:
+3. Run the esp-file-bridge tool to push the models over Serial to the SD Card:
 ```bash
-python upload_vad.py COM4
+pip install -e D:\github-repositorys\esp-uart-filebridge\python
+esp-file-bridge upload_dir ./models /sd/models/ --port COM4
 ```
 
 ## 2️⃣ Build and Flash

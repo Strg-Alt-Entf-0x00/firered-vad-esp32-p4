@@ -489,7 +489,7 @@ static void IRAM_ATTR dense_relu_forward(const DenseLayer* layer, const float* i
         }
 
         const int16_t* W = (const int16_t*)layer->weight;
-        const float* B = (layer->bias != nullptr) ? (const float*)layer->bias : nullptr;
+        const int16_t* B = (const int16_t*)layer->bias;
         float out_scale = in_scale * layer->weight_scale;
 
         for (uint32_t o = 0; o < out_dim; o++) {

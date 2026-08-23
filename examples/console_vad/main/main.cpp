@@ -20,13 +20,8 @@
 #include "cmd_vad_cli.h"
 #include "audio_manager.h"
 #include "vad_runner.h"
-#include "file_protocol.h"
-#include "filesystem_manager.h"
+#include "esp_uart_filebridge.h"
 #include "driver/uart.h"
-
-// Global handles for UART File Manager
-FileProtocol* g_file_protocol = nullptr;
-FilesystemManager* g_fs_manager = nullptr;
 
 static const char* TAG = "MAIN";
 
@@ -61,73 +56,16 @@ static void print_banner(void) {
 }
 
 
-// UART Configuration for File Protocol
-#define FILE_UART_NUM      UART_NUM_1
-#define FILE_UART_TX_PIN   30  // GPIO30
-#define FILE_UART_RX_PIN   31  // GPIO31
-#define FILE_UART_RTS_PIN  50  // GPIO50
-#define FILE_UART_CTS_PIN  29  // GPIO29
-#define FILE_UART_BAUD     3000000
-#define FILE_UART_BUF_SIZE 8192
-
-static esp_err_t uart_tx_callback(const uint8_t* data, size_t len) {
-    int written = uart_write_bytes(FILE_UART_NUM, data, len);
-    return (written == len) ? ESP_OK : ESP_FAIL;
-}
-
-static void uart_rx_task(void* arg) {
-    uint8_t* rx_buf = (uint8_t*)malloc(FILE_UART_BUF_SIZE);
-    if (!rx_buf) {
-        ESP_LOGE(TAG, "Failed to allocate UART RX buffer");
-        vTaskDelete(NULL);
-        return;
-    }
-    
-    ESP_LOGI(TAG, "UART RX task started - waiting for data on UART%d (GPIO%d/GPIO%d @ %d baud)", 
-             FILE_UART_NUM, FILE_UART_TX_PIN, FILE_UART_RX_PIN, FILE_UART_BAUD);
-             
-    while (1) {
-        int len = uart_read_bytes(FILE_UART_NUM, rx_buf, FILE_UART_BUF_SIZE, pdMS_TO_TICKS(100));
-        if (len > 0) {
-            if (g_file_protocol) {
-                g_file_protocol->process_rx_data(rx_buf, len);
-            }
-        }
-    }
-}
-
 static esp_err_t init_uart_file_protocol(void) {
     ESP_LOGI(TAG, "Initializing UART File Transfer Protocol...");
     
-    uart_config_t uart_config = {
-        .baud_rate = FILE_UART_BAUD,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_CTS_RTS,
-        .rx_flow_ctrl_thresh = 96,
-        .source_clk = UART_SCLK_DEFAULT,
-        .flags = {},
-    };
+    // We use the new esp-uart-filebridge component
+    esp_uart_filebridge_config_t cfg = ESP_UART_FILEBRIDGE_CONFIG_DEFAULT();
+    // Default pins are correct for Waveshare ESP32-P4-WIFI6 (TX:30, RX:31, RTS:50, CTS:29)
+    // Default baud is 3000000.
     
-    ESP_ERROR_CHECK(uart_param_config(FILE_UART_NUM, &uart_config));
-    ESP_ERROR_CHECK(uart_set_pin(FILE_UART_NUM, FILE_UART_TX_PIN, FILE_UART_RX_PIN, FILE_UART_RTS_PIN, FILE_UART_CTS_PIN));
-    ESP_ERROR_CHECK(uart_driver_install(FILE_UART_NUM, FILE_UART_BUF_SIZE, FILE_UART_BUF_SIZE, 0, NULL, 0));
-    
-    g_fs_manager = new FilesystemManager();
-    if (g_fs_manager) g_fs_manager->init();
-    
-    g_file_protocol = new FileProtocol();
-    if (g_file_protocol) {
-        g_file_protocol->init(g_fs_manager);
-        g_file_protocol->set_tx_callback(uart_tx_callback);
-    }
-    
-    xTaskCreate(uart_rx_task, "uart_rx", 16384, NULL, 5, NULL);
-    
-    return ESP_OK;
+    return esp_uart_filebridge_init(&cfg);
 }
-
 extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Starting FireVAD System");
     

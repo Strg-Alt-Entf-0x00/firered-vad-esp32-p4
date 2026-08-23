@@ -3,3 +3,5 @@ dependencies:
     version: "^1.6.0"
     rules:
       - if: "idf_version >=6.0"
+  Strg-Alt-Entf-0x00/esp-uart-filebridge:
+    git: https://github.com/Strg-Alt-Entf-0x00/esp-uart-filebridge.git

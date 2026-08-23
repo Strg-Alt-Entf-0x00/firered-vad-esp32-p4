@@ -5,12 +5,15 @@ import os
 import datetime
 import re
 
-from esp32_config import get_config
+import argparse
 
-config = get_config()
-PORT = config.monitor_port
-BAUD = config.monitor_baud
+parser = argparse.ArgumentParser(description="FireRedVAD Benchmark Suite")
+parser.add_argument("--port", default="COM4", help="Console Serial Port")
+parser.add_argument("--baud", type=int, default=115200, help="Console Baud Rate")
+args = parser.parse_args()
 
+PORT = args.port
+BAUD = args.baud
 MODELS = {
     "Stream-VAD FP32": "models/FireRedVAD-ESP32-P4/stream-vad/fp32/firered-stream-vad-fp32.frvd",
     "Stream-VAD INT16": "models/FireRedVAD-ESP32-P4/stream-vad/int16/firered-stream-vad-int16.frvd",

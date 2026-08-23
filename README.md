@@ -96,9 +96,21 @@ All numbers below represent the **raw Neural Network (NN) inference latency** me
 
 | Model | C++ Execution Mode | Pipeline Throughput | RTF | Real-Time Capable? |
 |-------|--------------------|---------------------|-----|--------------------|
+| **FP32 Models** | *(2.3 MB)* | | | |
 | `Stream-VAD FP32` | Dual-Core (DSP+NN parallel) | **8.42 ms** | 0.84 | **Yes** |
 | `AED-VAD FP32`    | Dual-Core (DSP+NN parallel) | **8.67 ms** | 0.87 | **Yes** |
-| `Stream-VAD INT8-CH` | Single-Core (Inline sequential) | **12.58 ms** | 1.25 | **No** (Needs Dual-Core or Buffering) |
+| `VAD FP32`        | Dual-Core (DSP+NN parallel) | **8.73 ms** | 0.87 | **Yes** |
+| **INT16 Models** | *(1.1 MB)* | | | |
+| `Stream-VAD INT16`| Dual-Core (DSP+NN parallel) | **6.01 ms** | 0.60 | **Yes (Fastest!)** |
+| `AED-VAD INT16`   | Dual-Core (DSP+NN parallel) | **6.04 ms** | 0.60 | **Yes** |
+| `VAD INT16`       | Dual-Core (DSP+NN parallel) | **6.03 ms** | 0.60 | **Yes** |
+| **INT8 / INT8-CH Models** | *(575 KB)* | | | |
+| `Stream-VAD INT8` | Single-Core (Inline seq.)   | **12.55 ms**| 1.25 | **No** (Buffering req.) |
+| `AED-VAD INT8`    | Single-Core (Inline seq.)   | **13.52 ms**| 1.35 | **No** (Buffering req.) |
+| `VAD INT8`        | Single-Core (Inline seq.)   | **13.49 ms**| 1.34 | **No** (Buffering req.) |
+| `Stream-VAD INT8-CH` | Single-Core (Inline seq.)| **12.58 ms**| 1.25 | **No** (Buffering req.) |
+| `AED-VAD INT8-CH` | Single-Core (Inline seq.)   | **13.55 ms**| 1.35 | **No** (Buffering req.) |
+| `VAD INT8-CH`     | Single-Core (Inline seq.)   | **13.53 ms**| 1.35 | **No** (Buffering req.) |
 
 ### Quantization: Why INT8-CH is Required for Production
 

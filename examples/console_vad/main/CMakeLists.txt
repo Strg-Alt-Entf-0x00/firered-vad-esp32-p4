@@ -7,8 +7,7 @@ idf_component_register(
         console
         nvs_flash
         espressif__esp_codec_dev
-        file_protocol
-        filesystem_manager
+        esp-uart-filebridge
     PRIV_REQUIRES
         driver
         esp_driver_gpio
