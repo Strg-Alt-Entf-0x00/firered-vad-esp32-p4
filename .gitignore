@@ -44,3 +44,4 @@ Thumbs.db
 # Local dev folders
 .vscode/
 .clangd
+.docs/
