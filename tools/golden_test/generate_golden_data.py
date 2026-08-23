@@ -1,12 +1,22 @@
 import os
 import sys
+import subprocess
+import pathlib
 import torch
 import numpy as np
 import struct
 import soundfile as sf
 
-# Add FireRedVAD original repo to path
-sys.path.append(os.path.join(os.path.dirname(__file__), "FireRedVAD_Repo"))
+# Auto-clone FireRedVAD reference repo if not present
+REPO_DIR = pathlib.Path(__file__).parent / "FireRedVAD_Repo"
+REPO_URL = "https://github.com/FireRedTeam/FireRedVAD"
+
+if not REPO_DIR.exists():
+    print(f"[INFO] FireRedVAD_Repo not found, cloning from {REPO_URL} ...")
+    subprocess.check_call(["git", "clone", REPO_URL, str(REPO_DIR)])
+    print("[INFO] Clone complete.")
+
+sys.path.append(str(REPO_DIR))
 
 from fireredvad.core.audio_feat import AudioFeat
 from fireredvad.core.detect_model import DetectModel
