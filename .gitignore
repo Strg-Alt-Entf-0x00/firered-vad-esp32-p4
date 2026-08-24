@@ -45,3 +45,6 @@ Thumbs.db
 .vscode/
 .clangd
 .docs/
+
+# ESP-IDF cache
+.cache/
