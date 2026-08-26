@@ -51,7 +51,7 @@ def main():
         sys.exit(1)
     
     # 1. Load FP32 model
-    send_command(ser, "vad_model_load /sd/models/FireRedVAD-ESP32-P4/stream-vad/fp32/firered-stream-vad-fp32.frvd")
+    send_command(ser, "vad_model_load /sd/models/firered-stream-vad-fp32.frvd")
     print("\nWaiting for model load to complete...")
     
     if not wait_for_prompt(ser, timeout=20):

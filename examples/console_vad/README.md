@@ -54,7 +54,7 @@ Once booted, you have access to a powerful CLI. Type `help` to see all commands.
    ```
 3. **Load the streaming (causal) INT8 model:**
    ```bash
-   vad_model_load /sd/models/FireRedVAD-ESP32-P4/stream-vad/int8/firered-stream-vad-int8.frvd
+   vad_model_load /sd/models/firered-stream-vad-int8.frvd
    ```
 4. **Start the live VAD test for 30 seconds:**
    ```bash

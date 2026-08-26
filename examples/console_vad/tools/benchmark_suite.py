@@ -15,14 +15,14 @@ args = parser.parse_args()
 PORT = args.port
 BAUD = args.baud
 MODELS = {
-    "Stream-VAD FP32": "models/FireRedVAD-ESP32-P4/stream-vad/fp32/firered-stream-vad-fp32.frvd",
-    "Stream-VAD INT16": "models/FireRedVAD-ESP32-P4/stream-vad/int16/firered-stream-vad-int16.frvd",
-    "Stream-VAD INT8": "models/FireRedVAD-ESP32-P4/stream-vad/int8/firered-stream-vad-int8.frvd",
-    "Stream-VAD INT8-CH": "models/FireRedVAD-ESP32-P4/stream-vad/int8-ch/firered-stream-vad-int8-ch.frvd",
-    "AED-VAD FP32": "models/FireRedVAD-ESP32-P4/aed/fp32/firered-aed-fp32.frvd",
-    "AED-VAD INT16": "models/FireRedVAD-ESP32-P4/aed/int16/firered-aed-int16.frvd",
-    "AED-VAD INT8": "models/FireRedVAD-ESP32-P4/aed/int8/firered-aed-int8.frvd",
-    "AED-VAD INT8-CH": "models/FireRedVAD-ESP32-P4/aed/int8-ch/firered-aed-int8-ch.frvd",
+    "Stream-VAD FP32": "models/firered-stream-vad-fp32.frvd",
+    "Stream-VAD INT16": "models/firered-stream-vad-int16.frvd",
+    "Stream-VAD INT8": "models/firered-stream-vad-int8.frvd",
+    "Stream-VAD INT8-CH": "models/firered-stream-vad-int8-ch.frvd",
+    "AED-VAD FP32": "models/firered-aed-fp32.frvd",
+    "AED-VAD INT16": "models/firered-aed-int16.frvd",
+    "AED-VAD INT8": "models/firered-aed-int8.frvd",
+    "AED-VAD INT8-CH": "models/firered-aed-int8-ch.frvd",
 }
 
 # Automatically gather all diverse audio sources from the local example_wave directory,

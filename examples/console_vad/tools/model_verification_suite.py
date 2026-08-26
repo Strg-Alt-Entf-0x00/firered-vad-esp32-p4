@@ -49,20 +49,20 @@ WAV_TIMEOUT_SECONDS = 90
 
 MODELS = {
     # --- VAD (Offline) ---
-    "VAD-FP32":     "models/FireRedVAD-ESP32-P4/vad/fp32/firered-vad-fp32.frvd",
-    "VAD-INT16":    "models/FireRedVAD-ESP32-P4/vad/int16/firered-vad-int16.frvd",
-    "VAD-INT8":     "models/FireRedVAD-ESP32-P4/vad/int8/firered-vad-int8.frvd",
-    "VAD-INT8-CH":  "models/FireRedVAD-ESP32-P4/vad/int8-ch/firered-vad-int8-ch.frvd",
+    "VAD-FP32":     "models/firered-vad-fp32.frvd",
+    "VAD-INT16":    "models/firered-vad-int16.frvd",
+    "VAD-INT8":     "models/firered-vad-int8.frvd",
+    "VAD-INT8-CH":  "models/firered-vad-int8-ch.frvd",
     # --- Stream-VAD ---
-    "SVAD-FP32":    "models/FireRedVAD-ESP32-P4/stream-vad/fp32/firered-stream-vad-fp32.frvd",
-    "SVAD-INT16":   "models/FireRedVAD-ESP32-P4/stream-vad/int16/firered-stream-vad-int16.frvd",
-    "SVAD-INT8":    "models/FireRedVAD-ESP32-P4/stream-vad/int8/firered-stream-vad-int8.frvd",
-    "SVAD-INT8-CH": "models/FireRedVAD-ESP32-P4/stream-vad/int8-ch/firered-stream-vad-int8-ch.frvd",
+    "SVAD-FP32":    "models/firered-stream-vad-fp32.frvd",
+    "SVAD-INT16":   "models/firered-stream-vad-int16.frvd",
+    "SVAD-INT8":    "models/firered-stream-vad-int8.frvd",
+    "SVAD-INT8-CH": "models/firered-stream-vad-int8-ch.frvd",
     # --- AED (Audio Event Detection) ---
-    "AED-FP32":     "models/FireRedVAD-ESP32-P4/aed/fp32/firered-aed-fp32.frvd",
-    "AED-INT16":    "models/FireRedVAD-ESP32-P4/aed/int16/firered-aed-int16.frvd",
-    "AED-INT8":     "models/FireRedVAD-ESP32-P4/aed/int8/firered-aed-int8.frvd",
-    "AED-INT8-CH":  "models/FireRedVAD-ESP32-P4/aed/int8-ch/firered-aed-int8-ch.frvd",
+    "AED-FP32":     "models/firered-aed-fp32.frvd",
+    "AED-INT16":    "models/firered-aed-int16.frvd",
+    "AED-INT8":     "models/firered-aed-int8.frvd",
+    "AED-INT8-CH":  "models/firered-aed-int8-ch.frvd",
 }
 
 # ---------------------------------------------------------------------------
