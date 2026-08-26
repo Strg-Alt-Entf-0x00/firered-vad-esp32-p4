@@ -1,61 +1,78 @@
-# ESP32-P4 Target
+# ============================================================================
+# ESP32-P4 Hardware Target Configuration
+# ============================================================================
 CONFIG_IDF_TARGET="esp32p4"
-
-# ESP32-P4 Chip Revision Support
-# This configuration supports ALL revisions: v1.0, v1.1, v1.3, and v3.x
 CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
-CONFIG_ESP32P4_REV_MIN_0=y
-CONFIG_ESP32P4_REV_MIN_FULL=0
 
-# CPU Frequency (360 MHz for optimal DSP performance)
-CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
-
-# Flash Configuration
+# ============================================================================
+# Flash Configuration (32 MB QIO Mode)
+# ============================================================================
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
-CONFIG_ESPTOOLPY_FLASHSIZE="32MB"
 
+# ============================================================================
 # Partition Table
+# ============================================================================
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 
-# PSRAM (Required for FireVAD models)
+# ============================================================================
+# PSRAM Configuration (Required for FireVAD models)
+# ============================================================================
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_USE_MALLOC=y
 
-# FreeRTOS
-CONFIG_FREERTOS_HZ=1000
-CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
-
-# Console
-CONFIG_ESP_CONSOLE_UART_NUM=0
-CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
-
-# Logging
-CONFIG_LOG_DEFAULT_LEVEL_INFO=y
-CONFIG_LOG_MAXIMUM_LEVEL_VERBOSE=y
-
-# SPIFFS (16MB partition requires larger page size)
+# ============================================================================
+# SPIFFS Configuration (16MB partition requires larger page size)
+# ============================================================================
 CONFIG_SPIFFS_MAX_PARTITIONS=3
 CONFIG_SPIFFS_PAGE_SIZE=512
 CONFIG_SPIFFS_OBJ_NAME_LEN=64
 CONFIG_SPIFFS_USE_MAGIC=y
 CONFIG_SPIFFS_USE_MAGIC_LENGTH=y
 
-# I2S
+# ============================================================================
+# FreeRTOS Configuration
+# ============================================================================
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+
+# ============================================================================
+# Console/UART Configuration
+# ============================================================================
+CONFIG_ESP_CONSOLE_UART_NUM=0
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+
+# ============================================================================
+# Logging Configuration
+# ============================================================================
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_LEVEL_VERBOSE=y
+
+# ============================================================================
+# I2S Configuration
+# ============================================================================
 CONFIG_I2S_ENABLE_DEBUG_LOG=n
 
-# Enable Microphone Audio
+# ============================================================================
+# FireVAD Component Configuration
+# ============================================================================
 CONFIG_FIREVAD_ENABLE_AUDIO=y
 
+# ============================================================================
 # ESP-DSP Optimization (CRITICAL: Enable PIE/SIMD acceleration!)
+# ============================================================================
 CONFIG_DSP_ANSI=n
 CONFIG_DSP_OPTIMIZED=y
 
-# Power Management
-CONFIG_PM_ENABLE=y
-
+# ============================================================================
 # Compiler Optimization (CRITICAL for Performance!)
+# ============================================================================
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_DISABLE=y
+
+# ============================================================================
+# Power Management
+# ============================================================================
+CONFIG_PM_ENABLE=y
