@@ -25,7 +25,7 @@ python download_frvd_models.py
 3. Run the esp-file-bridge tool to push the models over Serial to the SD Card:
 ```bash
 pip install -e D:\github-repositorys\esp-uart-filebridge\python
-esp-file-bridge upload_dir ./models /sd/models/ --port COM4
+esp-file-bridge upload_dir ../models_frvd /sd/models/ --port COM4
 ```
 
 ## 2️⃣ Build and Flash

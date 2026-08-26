@@ -3,8 +3,8 @@ build/
 sdkconfig
 sdkconfig.old
 # Models (download from HuggingFace)
-examples/*/frvd_models/
-pth_models/
+examples/*/models_frvd/
+models_pth/
 # ESP-IDF managed components (auto-downloaded via idf_component.yml)
 examples/*/managed_components/
 # Local backup archives

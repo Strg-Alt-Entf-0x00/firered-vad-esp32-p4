@@ -35,7 +35,7 @@ def save_bin(filepath, np_array):
 
 def main():
     wav_path = "../../examples/console_vad/example_wave/speech-welcome-constant-volume.wav"
-    model_dir = "../../pth_models/Stream-VAD"
+    model_dir = "../../models_pth/Stream-VAD"
     output_dir = "golden_dumps"
     
     os.makedirs(output_dir, exist_ok=True)

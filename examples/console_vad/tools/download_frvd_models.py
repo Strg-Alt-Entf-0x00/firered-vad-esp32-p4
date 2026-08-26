@@ -66,7 +66,7 @@ def download_model_variant(repo_id, model_path, output_dir):
         f"{model_path}/{base_name}-{quant}.frvd",
     ]
     
-    local_dir = os.path.join(output_dir, model_path)
+    local_dir = output_dir
     os.makedirs(local_dir, exist_ok=True)
     
     print(f"\n[INFO] Downloading {model_path}...")
@@ -116,8 +116,9 @@ def main():
     parser.add_argument("--quantization", choices=QUANTIZATIONS,
                         help="Only download one quantization (default: all)")
 
-    parser.add_argument("--output-dir", default="../frvd_models",
-                        help="Output directory (default: ../frvd_models)")
+    default_output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models_frvd"))
+    parser.add_argument("--output-dir", default=default_output_dir,
+                        help="Output directory for downloaded models")
     
     args = parser.parse_args()
     
