@@ -54,7 +54,7 @@ Once booted, you have access to a powerful CLI. Type `help` to see all commands.
    ```
 3. **Load the streaming (causal) INT8 model:**
    ```bash
-   vad_model_load /sd/models/firered-stream-vad-int8.frvd
+   vad_model_load models/firered-stream-vad-int8.frvd
    ```
 4. **Start the live VAD test for 30 seconds:**
    ```bash
@@ -69,8 +69,8 @@ Once booted, you have access to a powerful CLI. Type `help` to see all commands.
 | `mic_level` | Measures peak and RMS of the room for 1 second. |
 | `agc_enable <0/1>` | Enables/Disables dynamic software gain (AGC). |
 | `agc_info` | Shows current AGC RMS targets and gains. |
-| `vad_model_list` | Lists all `.frvd` models found on the SD Card. |
-| `vad_model_load <path>` | Loads an INT8 or FP32 model into PSRAM. |
+| `ls [path]` | Lists files and directories on the SD Card. |
+| `vad_model_load <filename.frvd>` | Loads an INT8 or FP32 model from `/sd/<filename.frvd>` into PSRAM. |
 | `vad_cascade_load <stream> <aed>` | Loads the Dual-Core Gatekeeper Cascade (Stream VAD + Offline AED). |
 | `vad_infer_mic [sec]` | Starts live microphone inference for the specified duration. |
 | `vad_infer_wav <path>` | Runs offline VAD inference on a test WAV file. |
