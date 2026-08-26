@@ -1,6 +1,6 @@
 dependencies:
   Strg-Alt-Entf-0x00/esp-uart-filebridge:
-    component_hash: 52a05c0556927bde2814557d8be61ffa9619784134de40fa6c70f08c938923e6
+    component_hash: d4eec6e3f61e8c040c4db06a2410f8f8fe3b10894e3622db57dd699403c61c60
     dependencies:
     - name: idf
       version: '>=5.2.0'
@@ -8,7 +8,7 @@ dependencies:
       git: https://github.com/Strg-Alt-Entf-0x00/esp-uart-filebridge.git
       path: .
       type: git
-    version: 2ab038189243c952c210320ad0d68f99ebd43a3e
+    version: 790e9abb7a2a951e0fb59e2c5373641f4648d478
   espressif/esp-dsp:
     component_hash: ed9ac175b14e0414399a2b33c525579414b5bad19a2a67b12ea212def96f9a98
     dependencies:
