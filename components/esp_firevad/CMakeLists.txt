@@ -1,6 +1,6 @@
 idf_component_register(SRCS "src/esp_firevad.cpp" "src/esp_firevad_dsp.cpp"
                        INCLUDE_DIRS "include"
-                       PRIV_REQUIRES esp-dsp esp-nn esp_timer)
+                       PRIV_REQUIRES esp-dsp esp_timer)
 
 # Aggressive compiler optimization flags for FireRedVAD inference performance
 # These flags provide ~6% performance improvement over standard -O2

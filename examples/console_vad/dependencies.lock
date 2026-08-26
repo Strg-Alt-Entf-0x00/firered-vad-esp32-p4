@@ -19,16 +19,6 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.8.2
-  espressif/esp-nn:
-    component_hash: 83eca824ef501eb0d8ac7d090970d8a2997ac369e5edb86366a5943e4368d5a5
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=5.1'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 1.3.0
   espressif/esp_codec_dev:
     component_hash: 4779f31a3ba3f9b38aee1afe6ccb9ba8f6108dc3a6e77d39d7d714e9a215371b
     dependencies:
@@ -46,8 +36,7 @@ dependencies:
 direct_dependencies:
 - Strg-Alt-Entf-0x00/esp-uart-filebridge
 - espressif/esp-dsp
-- espressif/esp-nn
 - espressif/esp_codec_dev
-manifest_hash: 0172d77597f35715f4fce4ea8611aa5bfbea3dfbb7bbc3e1e14101de2553b9d5
+manifest_hash: 2680ad77fa353cef9e5939faec696840cd4ed8e0e04fa6698d89431a1d85b560
 target: esp32p4
 version: 3.0.0
