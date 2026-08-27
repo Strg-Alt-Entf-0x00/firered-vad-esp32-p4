@@ -10,7 +10,7 @@ examples/*/managed_components/
 # Local backup archives
 tools/backup/backups/
 # Private audio recordings & golden test data dumps
-tools/audio_analysis/mic_data/
+tools/mic_test/mic_data/
 tools/golden_test/esp32_dumps/
 tools/golden_test/golden_dumps/
 tools/golden_test/FireRedVAD_Repo/
